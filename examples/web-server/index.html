@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Browser-Socket Web Server Demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 10px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        
+        @media (max-width: 768px) {
+            body {
+                padding: 5px;
+            }
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 300px 1fr minmax(200px, 25vh);
+            gap: 10px;
+            height: 98vh;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto auto 1fr auto;
+                height: auto;
+                gap: 5px;
+            }
+        }
+        
+        .source-code, .response-config, .server-controls, .access-log {
+            background: #2d2d2d;
+            border: 1px solid #444;
+            padding: 15px;
+            overflow-y: auto;
+        }
+        
+        @media (max-width: 768px) {
+            .source-code, .response-config, .server-controls, .access-log {
+                padding: 10px;
+            }
+        }
+        
+        .source-code {
+            grid-column: 1;
+            grid-row: 1;
+        }
+        
+        .response-config {
+            grid-column: 2;
+            grid-row: 1;
+        }
+        
+        .server-controls {
+            grid-column: 1 / 3;
+            grid-row: 2;
+        }
+        
+        .access-log {
+            grid-column: 1 / 3;
+            grid-row: 3;
+        }
+        
+        @media (max-width: 768px) {
+            .source-code {
+                grid-column: 1;
+                grid-row: 1;
+            }
+            
+            .response-config {
+                grid-column: 1;
+                grid-row: 2;
+            }
+            
+            .server-controls {
+                grid-column: 1;
+                grid-row: 3;
+                max-height: none;
+            }
+            
+            .access-log {
+                grid-column: 1;
+                grid-row: 4;
+                min-height: 200px;
+                max-height: 300px;
+                overflow-y: auto;
+            }
+        }
+        
+        h2 {
+            color: #569cd6;
+            margin: 0 0 15px 0;
+            font-size: 16px;
+        }
+        
+        @media (max-width: 768px) {
+            h2 {
+                font-size: 14px;
+                margin: 0 0 10px 0;
+            }
+        }
+        
+        .code {
+            background: #1e1e1e;
+            padding: 10px;
+            border: 1px solid #444;
+            white-space: pre-wrap;
+            font-size: 12px;
+            color: #9cdcfe;
+            overflow-x: auto;
+        }
+        
+        @media (max-width: 768px) {
+            .code {
+                font-size: 10px;
+                padding: 8px;
+            }
+        }
+        
+        textarea {
+            width: 100%;
+            height: 220px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border: 1px solid #444;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            padding: 8px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+        
+        @media (max-width: 768px) {
+            textarea {
+                height: 150px;
+                font-size: 11px;
+            }
+        }
+        
+        button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        
+        @media (max-width: 768px) {
+            button {
+                padding: 8px 16px;
+                margin: 3px;
+                font-size: 14px;
+            }
+        }
+        
+        button:hover {
+            background: #005a9e;
+        }
+        
+        button:disabled {
+            background: #444;
+            cursor: not-allowed;
+        }
+        
+        .server-info {
+            background: #1e1e1e;
+            padding: 10px;
+            font-size: 12px;
+            border: 1px solid #444;
+            margin: 10px 0;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .server-info a {
+            color: #569cd6;
+            text-decoration: none;
+        }
+        
+        .server-info a:hover {
+            text-decoration: underline;
+        }
+        
+        .log-entry {
+            font-size: 12px;
+            margin: 2px 0;
+            color: #d4d4d4;
+            word-break: break-all;
+        }
+        
+        @media (max-width: 768px) {
+            .log-entry {
+                font-size: 11px;
+            }
+        }
+        
+        .log-entry.GET { color: #4ec9b0; }
+        .log-entry.POST { color: #dcdcaa; }
+        .log-entry.error { color: #f14c4c; }
+        
+        .status-200 { color: #4ec9b0; }
+        .status-404 { color: #f14c4c; }
+        .status-400 { color: #f14c4c; }
+        .status-500 { color: #f14c4c; }
+        
+        .connection-status {
+            padding: 10px;
+            font-size: 11px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+        }
+        
+        .connected {
+            background: rgba(78, 201, 176, 0.1);
+            border: 1px solid #4ec9b0;
+            color: #4ec9b0;
+        }
+        
+        .disconnected {
+            background: rgba(241, 76, 76, 0.1);
+            border: 1px solid #f14c4c;
+            color: #f14c4c;
+        }
+        
+        .connecting {
+            background: rgba(220, 220, 170, 0.1);
+            border: 1px solid #dcdcaa;
+            color: #dcdcaa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="source-code">
+            <h2>Browser-Socket HTTP Server Code</h2>
+            <div class="code" id="source-code">// Connect to browser-socket demo server
+const ws = new WebSocket('wss://relay-server');
+const net = new BrowserSocket.Net(ws);
+
+// Create HTTP server
+const server = net.createServer((socket) => {
+    let requestData = '';
+    
+    socket.on('data', (data) => {
+        requestData += new TextDecoder().decode(data);
+        
+        // Check if we have complete HTTP request
+        if (requestData.includes('\r\n\r\n')) {
+            handleHttpRequest(socket, requestData);
+        }
+    });
+});
+
+// Listen on ephemeral port
+server.listen(0, () => {
+    const addr = server.address();
+    console.log(`HTTP server listening on port ${addr.port}`);
+});
+
+function handleHttpRequest(socket, request) {
+    const lines = request.split('\r\n');
+    const [method, path] = lines[0].split(' ');
+    
+    // Get custom response from textarea
+    const response = document.getElementById('response-content').value;
+    
+    socket.write(response);
+    socket.end();
+    
+    // Log the request
+    logAccess(socket.remoteAddress || clientIP, method, path, 200);
+}</div>
+        </div>
+        
+        <div class="response-config">
+            <h2>HTTP Response Configuration</h2>
+            <textarea id="response-content" placeholder="Enter raw HTTP response including headers and body">HTTP/1.1 200 OK
+Content-Type: text/html
+Connection: close
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Browser-Socket Demo</title>
+</head>
+<body>
+    <h1>Hello from Browser-Socket!</h1>
+    <p>This HTTP server is running in your browser.</p>
+</body>
+</html></textarea>
+        </div>
+        
+        <div class="server-controls">
+            <h2>Server Controls</h2>
+            <div id="connection-status" class="connection-status disconnected">
+                Disconnected from demo server
+            </div>
+            <button id="start-server-btn" onclick="startHttpServer()">Start HTTP Server</button>
+            <button id="stop-server-btn" onclick="stopHttpServer()" disabled>Stop Server</button>
+            
+            <div id="server-info" class="server-info" style="display: none;">
+                <strong>Server URL:</strong> <a id="server-link" href="#" target="_blank"></a>
+                <div style="margin-top: 10px; font-size: 0.9em; color: #9cdcfe;">
+                    <em>Note: Edit the response textarea above to customize the HTTP response content</em>
+                </div>
+            </div>
+        </div>
+        
+        <div class="access-log">
+            <h2>Access Log</h2>
+            <div id="log-container"></div>
+        </div>
+    </div>
+    
+    <script src="https://unpkg.com/@gvibehacker/browser-socket-client@0.0.1/dist/index.min.js"></script>
+    <script>
+        let wsPromise = null;
+        let net = null;
+        let httpServer = null;
+        let serverAddress = null;
+        
+        function updateConnectionStatus(status, message) {
+            const statusDiv = document.getElementById('connection-status');
+            if (statusDiv) {
+                statusDiv.className = `connection-status ${status}`;
+                statusDiv.textContent = message;
+            }
+        }
+        
+        async function ensureConnection() {
+            if (!wsPromise) {
+                wsPromise = new Promise((resolve, reject) => {
+                    updateConnectionStatus('connecting', 'Connecting to demo server...');
+                    
+                    const ws = new WebSocket('wss://demo.browser-socket.george.ma/?key=demo-frontend');
+                    
+                    ws.onopen = () => {
+                        if (!BrowserSocket || !BrowserSocket.Net) {
+                            reject(new Error('BrowserSocket.Net not loaded'));
+                            return;
+                        }
+                        net = new BrowserSocket.Net(ws);
+                        updateConnectionStatus('connected', 'Connected to demo server');
+                        logMessage('Connected to demo server');
+                        resolve(net);
+                    };
+                    
+                    ws.onclose = () => {
+                        updateConnectionStatus('disconnected', 'Disconnected from demo server');
+                        logMessage('Disconnected from demo server');
+                        net = null;
+                        wsPromise = null;
+                    };
+                    
+                    ws.onerror = (error) => {
+                        updateConnectionStatus('disconnected', 'Connection failed');
+                        logMessage('Connection error: ' + error);
+                        wsPromise = null;
+                        reject(error);
+                    };
+                });
+            }
+            return wsPromise;
+        }
+        
+        
+        async function startHttpServer() {
+            // Ensure connection first
+            try {
+                await ensureConnection();
+            } catch (error) {
+                logMessage('Failed to connect to server: ' + (error.message || error));
+                return;
+            }
+            
+            httpServer = net.createServer((socket) => {
+                let requestData = '';
+                let requestStartTime = Date.now();
+                let clientIP = socket.remoteAddress || 'unknown';
+                
+                socket.on('data', (data) => {
+                    requestData += new TextDecoder().decode(data);
+                    
+                    // Check if we have complete HTTP request (headers end with \r\n\r\n)
+                    if (requestData.includes('\r\n\r\n')) {
+                        handleHttpRequest(socket, requestData, clientIP, requestStartTime);
+                    }
+                });
+                
+                socket.on('error', (error) => {
+                    logAccess(clientIP, 'ERROR', '-', 500, 0, requestStartTime);
+                });
+            });
+            
+            httpServer.listen(0, () => {
+                serverAddress = httpServer.address();
+                const port = serverAddress.port;
+                
+                const serverUrl = `http://192.18.128.5:${port}/`;
+                const serverLink = document.getElementById('server-link');
+                serverLink.href = serverUrl;
+                serverLink.textContent = serverUrl;
+                document.getElementById('server-info').style.display = 'block';
+                
+                document.getElementById('start-server-btn').disabled = true;
+                document.getElementById('stop-server-btn').disabled = false;
+                
+                logMessage(`HTTP server started on port ${port}`);
+            });
+        }
+        
+        function stopHttpServer() {
+            if (httpServer) {
+                httpServer.close(() => {
+                    document.getElementById('server-info').style.display = 'none';
+                    document.getElementById('start-server-btn').disabled = false;
+                    document.getElementById('stop-server-btn').disabled = true;
+                    
+                    logMessage('HTTP server stopped');
+                    httpServer = null;
+                    serverAddress = null;
+                });
+            }
+        }
+        
+        function handleHttpRequest(socket, request, clientIP, startTime) {
+            try {
+                const lines = request.split('\r\n');
+                const requestLine = lines[0];
+                const [method, path, httpVersion] = requestLine.split(' ');
+                
+                // Parse headers
+                const headers = {};
+                for (let i = 1; i < lines.length; i++) {
+                    if (lines[i] === '') break;
+                    const [key, value] = lines[i].split(': ');
+                    if (key && value) {
+                        headers[key.toLowerCase()] = value;
+                    }
+                }
+                
+                // Get custom response from textarea
+                let response = document.getElementById('response-content').value;
+                
+                // If response doesn't start with HTTP, assume it's just body and add headers
+                if (!response.startsWith('HTTP/')) {
+                    const contentLength = new TextEncoder().encode(response).length;
+                    response = `HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${contentLength}\r\nConnection: close\r\n\r\n${response}`;
+                }
+                
+                socket.write(response);
+                socket.end();
+                
+                // Calculate response time
+                const responseTime = Date.now() - startTime;
+                const responseSize = new TextEncoder().encode(response).length;
+                
+                // Extract status code from response
+                const statusMatch = response.match(/HTTP\/[\d\.]+\s+(\d+)/);
+                const statusCode = statusMatch ? parseInt(statusMatch[1]) : 200;
+                
+                logAccess(clientIP, method, path, statusCode, responseSize, startTime, headers['user-agent']);
+                
+            } catch (error) {
+                console.error('Error handling HTTP request:', error);
+                const errorResponse = 'HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\nConnection: close\r\n\r\nInternal Server Error';
+                socket.write(errorResponse);
+                socket.end();
+                
+                logAccess(clientIP, 'ERROR', request.split(' ')[1] || '-', 500, errorResponse.length, startTime);
+            }
+        }
+        
+        function logAccess(clientIP, method, path, statusCode, size, startTime, userAgent = '-') {
+            const now = new Date();
+            const timestamp = now.toISOString().replace('T', ' ').slice(0, -5);
+            const dateStr = now.toLocaleDateString('en-US', { 
+                day: '2-digit', 
+                month: 'short', 
+                year: 'numeric' 
+            }).replace(',', '');
+            const timeStr = now.toTimeString().slice(0, 8);
+            
+            // Apache Common Log Format: IP - - [timestamp] "METHOD path HTTP/1.1" status size "referer" "user-agent"
+            const logEntry = `${clientIP} - - [${dateStr}:${timeStr} +0000] "${method} ${path} HTTP/1.1" ${statusCode} ${size || 0} "-" "${userAgent}"`;
+            
+            const container = document.getElementById('log-container');
+            const logDiv = document.createElement('div');
+            logDiv.className = `log-entry ${method} status-${statusCode}`;
+            logDiv.textContent = logEntry;
+            
+            container.appendChild(logDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        function logMessage(message) {
+            const now = new Date();
+            const timestamp = now.toTimeString().slice(0, 8);
+            
+            const container = document.getElementById('log-container');
+            const logDiv = document.createElement('div');
+            logDiv.className = 'log-entry';
+            logDiv.textContent = `[${timestamp}] ${message}`;
+            
+            container.appendChild(logDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+    </script>
+</body>
+</html>

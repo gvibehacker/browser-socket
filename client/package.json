@@ -1,0 +1,33 @@
+{
+  "name": "@gvibehacker/browser-socket-client",
+  "version": "0.0.1",
+  "description": "Client library to enable browser access to native TCP sockets",
+  "main": "dist/index.cjs.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "unpkg": "dist/index.min.js",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "tcp",
+    "socket",
+    "browser",
+    "native",
+    "networking"
+  ],
+  "author": "George Ma",
+  "license": "MIT",
+  "devDependencies": {
+    "@rollup/plugin-typescript": "^12.1.4",
+    "rollup": "^4.0.0",
+    "rollup-plugin-esbuild": "^6.2.1",
+    "tslib": "^2.6.0",
+    "typescript": "^5.0.0"
+  }
+}

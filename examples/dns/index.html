@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Browser-Socket DNS Lookup Demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            margin: 0;
+            padding: 10px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        
+        @media (max-width: 768px) {
+            body {
+                padding: 5px;
+            }
+        }
+        
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 350px 250px minmax(200px, 25vh);
+            gap: 10px;
+            height: 98vh;
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto auto auto auto;
+                height: auto;
+                gap: 5px;
+            }
+        }
+        
+        .go-code, .js-code, .dns-controls, .access-log {
+            background: #2d2d2d;
+            border: 1px solid #444;
+            padding: 15px;
+            overflow-y: auto;
+        }
+        
+        @media (max-width: 768px) {
+            .go-code, .js-code, .dns-controls, .access-log {
+                padding: 10px;
+            }
+        }
+        
+        .go-code {
+            grid-column: 1;
+            grid-row: 1;
+        }
+        
+        .js-code {
+            grid-column: 2;
+            grid-row: 1;
+        }
+        
+        .dns-controls {
+            grid-column: 1 / 3;
+            grid-row: 2;
+        }
+        
+        .access-log {
+            grid-column: 1 / 3;
+            grid-row: 3;
+        }
+        
+        @media (max-width: 768px) {
+            .go-code {
+                grid-column: 1;
+                grid-row: 1;
+            }
+            
+            .js-code {
+                grid-column: 1;
+                grid-row: 2;
+            }
+            
+            .dns-controls {
+                grid-column: 1;
+                grid-row: 3;
+            }
+            
+            .access-log {
+                grid-column: 1;
+                grid-row: 4;
+                min-height: 200px;
+                max-height: 300px;
+            }
+        }
+        
+        h2 {
+            color: #569cd6;
+            margin: 0 0 15px 0;
+            font-size: 16px;
+        }
+        
+        @media (max-width: 768px) {
+            h2 {
+                font-size: 14px;
+                margin: 0 0 10px 0;
+            }
+        }
+        
+        .code {
+            background: #1e1e1e;
+            padding: 10px;
+            border: 1px solid #444;
+            white-space: pre-wrap;
+            font-size: 11px;
+            color: #9cdcfe;
+            overflow-x: auto;
+            height: calc(100% - 50px);
+        }
+        
+        @media (max-width: 768px) {
+            .code {
+                font-size: 10px;
+                padding: 8px;
+                height: 200px;
+            }
+        }
+        
+        input[type="text"] {
+            width: 300px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border: 1px solid #444;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            padding: 8px;
+            margin-right: 10px;
+        }
+        
+        @media (max-width: 768px) {
+            input[type="text"] {
+                width: calc(100% - 100px);
+                font-size: 12px;
+                margin-bottom: 10px;
+            }
+        }
+        
+        button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 14px;
+        }
+        
+        @media (max-width: 768px) {
+            button {
+                padding: 8px 12px;
+                font-size: 12px;
+            }
+        }
+        
+        button:hover:not(:disabled) {
+            background: #005a9e;
+        }
+        
+        button:disabled {
+            background: #444;
+            cursor: not-allowed;
+        }
+        
+        .dns-result {
+            background: #1e1e1e;
+            padding: 10px;
+            font-size: 12px;
+            border: 1px solid #444;
+            margin-top: 15px;
+            font-family: 'Courier New', monospace;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+        
+        .dns-answer {
+            margin: 5px 0;
+            padding: 5px;
+            background: #2d2d2d;
+            border-left: 3px solid #569cd6;
+        }
+        
+        .log-entry {
+            font-size: 12px;
+            margin: 2px 0;
+            color: #d4d4d4;
+            word-break: break-all;
+        }
+        
+        @media (max-width: 768px) {
+            .log-entry {
+                font-size: 11px;
+            }
+        }
+        
+        .log-entry.info { color: #569cd6; }
+        .log-entry.success { color: #4ec9b0; }
+        .log-entry.error { color: #f14c4c; }
+        .log-entry.warning { color: #dcdcaa; }
+        
+        .connection-status {
+            display: inline-block;
+            padding: 5px 10px;
+            font-size: 11px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+        }
+        
+        .connected {
+            background: rgba(78, 201, 176, 0.1);
+            border: 1px solid #4ec9b0;
+            color: #4ec9b0;
+        }
+        
+        .disconnected {
+            background: rgba(241, 76, 76, 0.1);
+            border: 1px solid #f14c4c;
+            color: #f14c4c;
+        }
+        
+        .connecting {
+            background: rgba(220, 220, 170, 0.1);
+            border: 1px solid #dcdcaa;
+            color: #dcdcaa;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="go-code">
+            <h2>Go WASM DNS Client Code</h2>
+            <div class="code" id="go-code">// BrowserSocket implements net.Conn for JavaScript sockets
+type BrowserSocket struct {
+    jsSocket js.Value
+    readBuf  chan []byte
+    closed   bool
+}
+
+// NewBrowserSocket wraps a JavaScript socket
+func NewBrowserSocket(jsSocket js.Value) *BrowserSocket {
+    bs := &BrowserSocket{
+        jsSocket: jsSocket,
+        readBuf:  make(chan []byte, 10),
+    }
+    
+    // Set up data handler
+    jsSocket.Call("on", "data", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+        if len(args) > 0 {
+            data := args[0]
+            buf := make([]byte, data.Get("length").Int())
+            js.CopyBytesToGo(buf, data)
+            bs.readBuf <- buf
+        }
+        return nil
+    }))
+    
+    return bs
+}
+
+// lookupDNS performs DNS lookup using net.Conn
+func lookupDNS(domain string, conn net.Conn) (js.Value, error) {
+    // Create DNS query with TCP length prefix
+    query := createDNSQueryTCP(domain)
+    
+    // Send query over connection
+    _, err := conn.Write(query)
+    if err != nil {
+        return js.Value{}, err
+    }
+    
+    // Read response
+    response := make([]byte, 1024)
+    n, err := conn.Read(response)
+    if err != nil {
+        return js.Value{}, err
+    }
+    
+    // Parse and return result
+    return parseDNSResponseTCP(response[:n])
+}</div>
+        </div>
+        
+        <div class="js-code">
+            <h2>JavaScript Browser-Socket Code</h2>
+            <div class="code" id="js-code">// Connect to browser-socket server
+const ws = new WebSocket('ws://localhost:8080');
+const net = new BrowserSocket.Net(ws);
+
+// DNS lookup with Go WASM + BrowserSocket
+async function performDNSLookup(domain) {
+    // Create socket to DNS server
+    const socket = new net.Socket();
+    
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+            socket.destroy();
+            reject(new Error('DNS timeout'));
+        }, 5000);
+        
+        socket.on('connect', () => {
+            // Call Go WASM lookupDNS with callback
+            window.lookupDNS(domain, socket, (error, result) => {
+                clearTimeout(timeout);
+                
+                if (error) {
+                    socket.end();
+                    reject(error);
+                } else if (result && result.success) {
+                    socket.end();
+                    resolve({
+                        domain: domain,
+                        answers: result.answers
+                    });
+                }
+            });
+        });
+        
+        socket.on('error', (err) => {
+            clearTimeout(timeout);
+            reject(err);
+        });
+        
+        // Connect to Cloudflare DNS over TCP
+        socket.connect(53, '1.1.1.1');
+    });
+}</div>
+        </div>
+        
+        <div class="dns-controls">
+            <h2>DNS Lookup Controls</h2>
+            <div>
+                <span id="connection-status" class="connection-status disconnected">
+                    Disconnected
+                </span>
+            </div>
+            <div style="margin: 15px 0;">
+                <input type="text" id="domain-input" placeholder="Enter domain (e.g., google.com)" value="google.com">
+                <button id="lookup-btn" onclick="performLookup()">Lookup DNS</button>
+            </div>
+            
+            <div id="dns-result" class="dns-result" style="display: none;">
+                <div id="result-content"></div>
+            </div>
+        </div>
+        
+        <div class="access-log">
+            <h2>Activity Log</h2>
+            <div id="log-container"></div>
+        </div>
+    </div>
+    
+    <script src="wasm_exec.js"></script>
+    <script src="https://unpkg.com/@gvibehacker/browser-socket-client@0.0.1/dist/index.min.js"></script>
+    <script>
+        let wsPromise = null;
+        let net = null;
+        let wasmReady = false;
+        let pendingQueries = new Map();
+        
+        // Load Go WASM
+        async function loadWasm() {
+            try {
+                const go = new Go();
+                const response = await fetch('dns.wasm');
+                const buffer = await response.arrayBuffer();
+                const result = await WebAssembly.instantiate(buffer, go.importObject);
+                go.run(result.instance);
+                wasmReady = true;
+                logMessage('Go WASM loaded successfully', 'success');
+                updateLookupButton();
+            } catch (error) {
+                logMessage('Failed to load Go WASM: ' + error.message, 'error');
+                console.error('WASM load error:', error);
+            }
+        }
+        
+        function updateConnectionStatus(status, message) {
+            const statusEl = document.getElementById('connection-status');
+            if (statusEl) {
+                statusEl.className = `connection-status ${status}`;
+                statusEl.textContent = message;
+            }
+            
+            updateLookupButton();
+        }
+        
+        function updateLookupButton() {
+            // Lookup button is always enabled when WASM is ready
+            const lookupBtn = document.getElementById('lookup-btn');
+            lookupBtn.disabled = !wasmReady;
+        }
+        
+        async function ensureConnection() {
+            if (!wsPromise) {
+                wsPromise = new Promise((resolve, reject) => {
+                    updateConnectionStatus('connecting', 'Connecting...');
+                    
+                    const ws = new WebSocket('wss://demo.browser-socket.george.ma/?key=demo-frontend');
+                    
+                    ws.onopen = () => {
+                        if (!BrowserSocket) {
+                            console.error('BrowserSocket not available!');
+                            reject(new Error('BrowserSocket not loaded'));
+                            return;
+                        }
+
+                        net = new BrowserSocket.Net(ws);
+                        updateConnectionStatus('connected', 'Connected');
+                        logMessage('Connected to browser-socket server', 'success');
+                        resolve(net);
+                    };
+                    
+                    ws.onclose = () => {
+                        updateConnectionStatus('disconnected', 'Disconnected');
+                        logMessage('Disconnected from server', 'warning');
+                        net = null;
+                        wsPromise = null;
+                    };
+                    
+                    ws.onerror = (error) => {
+                        updateConnectionStatus('disconnected', 'Connection failed');
+                        logMessage('Connection error', 'error');
+                        wsPromise = null;
+                        reject(error);
+                    };
+                });
+            }
+            return wsPromise;
+        }
+        
+        function concatArrays(a, b) {
+            const result = new Uint8Array(a.length + b.length);
+            result.set(a, 0);
+            result.set(b, a.length);
+            return result;
+        }
+        
+        async function performLookup() {
+            const domain = document.getElementById('domain-input').value.trim();
+            if (!domain) {
+                logMessage('Please enter a domain name', 'warning');
+                return;
+            }
+            
+            if (!wasmReady) {
+                logMessage('WASM not loaded yet', 'error');
+                return;
+            }
+            
+            // Ensure WebSocket connection
+            try {
+                await ensureConnection();
+            } catch (error) {
+                console.error('Connection error:', error);
+                logMessage('Failed to connect to server: ' + (error.message || error), 'error');
+                return;
+            }
+            
+            logMessage(`Looking up DNS for: ${domain}`, 'info');
+            
+            try {
+                // Create socket and connect to DNS server
+                const socket = new net.Socket();
+                let responseReceived = false;
+                
+                const timeoutId = setTimeout(() => {
+                    if (!responseReceived) {
+                        socket.destroy();
+                        logMessage('DNS query timeout', 'error');
+                        showResult({ error: 'Query timeout' });
+                    }
+                }, 5000);
+                
+                socket.on('connect', () => {
+                    logMessage('Connected to 1.1.1.1:53', 'success');
+                    
+                    // Use the new lookupDNS function with callback
+                    window.lookupDNS(domain, socket, (error, result) => {
+                        responseReceived = true;
+                        clearTimeout(timeoutId);
+                        
+                        if (error) {
+                            socket.end();
+                            logMessage('DNS lookup error: ' + error.error, 'error');
+                            showResult({ error: error.error });
+                        } else if (result && result.success) {
+                            socket.end();
+                            logMessage(`DNS lookup successful: ${result.answerCount} answers`, 'success');
+                            showResult({
+                                domain: domain,
+                                answers: result.answers
+                            });
+                        } else {
+                            socket.end();
+                            logMessage('Unexpected result from DNS lookup', 'error');
+                            showResult({ error: 'Unexpected result format' });
+                        }
+                    });
+                });
+                
+                socket.on('error', (error) => {
+                    clearTimeout(timeoutId);
+                    logMessage('Socket error: ' + error, 'error');
+                    showResult({ error: error.toString() });
+                });
+                
+                socket.on('end', () => {
+                    if (!responseReceived) {
+                        logMessage('Connection closed without response', 'warning');
+                    }
+                });
+                
+                // Connect to Cloudflare DNS
+                socket.connect(53, '1.1.1.1');
+                
+            } catch (error) {
+                logMessage('Lookup failed: ' + error.message, 'error');
+                showResult({ error: error.message });
+            }
+        }
+        
+        function showResult(result) {
+            const resultDiv = document.getElementById('dns-result');
+            const contentDiv = document.getElementById('result-content');
+            
+            resultDiv.style.display = 'block';
+            
+            if (result.error) {
+                contentDiv.innerHTML = `<div style="color: #f14c4c;">Error: ${result.error}</div>`;
+                return;
+            }
+            
+            let html = `<div style="color: #569cd6; margin-bottom: 10px;">DNS Results for ${result.domain}:</div>`;
+            
+            if (result.answers && result.answers.length > 0) {
+                for (let i = 0; i < result.answers.length; i++) {
+                    const answer = result.answers[i];
+                    html += `<div class="dns-answer">`;
+                    html += `<div><strong>${answer.name}</strong></div>`;
+                    html += `<div>Type: ${answer.type} | TTL: ${answer.ttl}s</div>`;
+                    html += `<div style="color: #4ec9b0;">→ ${answer.data}</div>`;
+                    html += `</div>`;
+                }
+            } else {
+                html += '<div>No answers received</div>';
+            }
+            
+            contentDiv.innerHTML = html;
+        }
+        
+        function logMessage(message, type = 'info') {
+            const now = new Date();
+            const timestamp = now.toTimeString().slice(0, 8);
+            
+            const container = document.getElementById('log-container');
+            const logDiv = document.createElement('div');
+            logDiv.className = `log-entry ${type}`;
+            logDiv.textContent = `[${timestamp}] ${message}`;
+            
+            container.appendChild(logDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+        
+        // Initialize on page load
+        window.addEventListener('load', () => {
+            loadWasm();
+            
+            // Allow Enter key to trigger lookup
+            document.getElementById('domain-input').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter' && !document.getElementById('lookup-btn').disabled) {
+                    performLookup();
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "name": "bridge-server",
+  "version": "1.0.0",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs",
+    "dev": "node index.mjs"
+  },
+  "dependencies": {
+    "@gvibehacker/browser-socket-server": "^0.0.1"
+  },
+  "devDependencies": {},
+  "keywords": [
+    "websocket",
+    "tcp",
+    "transport",
+    "multiplexing",
+    "browser",
+    "node"
+  ],
+  "author": "",
+  "license": "MIT"
+}

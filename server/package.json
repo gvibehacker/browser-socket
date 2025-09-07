@@ -1,0 +1,36 @@
+{
+  "name": "@gvibehacker/browser-socket-server",
+  "version": "0.0.1",
+  "description": "Server library to enable browser access to native TCP sockets",
+  "main": "dist/index.cjs.js",
+  "module": "dist/index.esm.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "tcp",
+    "socket",
+    "node",
+    "native",
+    "networking"
+  ],
+  "author": "George Ma",
+  "license": "MIT",
+  "devDependencies": {
+    "@rollup/plugin-typescript": "^12.1.4",
+    "@types/ws": "^8.18.1",
+    "rollup": "^4.0.0",
+    "rollup-plugin-esbuild": "^6.2.1",
+    "tslib": "^2.6.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
