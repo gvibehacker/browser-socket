@@ -23,8 +23,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: |
+            client/package-lock.json
+            server/package-lock.json
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
+
+      - name: Generate documentation
+        run: |
+          # Install dependencies and generate client docs
+          cd client
+          npm ci
+          npm run docs
+          cd ..
+          
+          # Install dependencies and generate server docs
+          cd server
+          npm ci
+          npm run docs
+          cd ..
 
       - name: Create deployment structure
         run: |
@@ -35,9 +58,13 @@ jobs:
           cp -r examples/dns _site/examples/
           cp -r examples/web-server _site/examples/
           
-          # Copy docs if it exists
-          if [ -d "docs" ]; then
-            cp -r docs _site/
+          # Copy generated docs
+          mkdir -p _site/docs
+          if [ -d "client/docs" ]; then
+            cp -r client/docs _site/docs/client
+          fi
+          if [ -d "server/docs" ]; then
+            cp -r server/docs _site/docs/server
           fi
 
       - name: Upload artifact

@@ -12,7 +12,8 @@
   "scripts": {
     "build": "rollup -c",
     "dev": "rollup -c -w",
-    "prepare": "npm run build"
+    "prepare": "npm run build",
+    "docs": "typedoc src/index.ts --out docs --name \"browser-socket Client API\" --theme default --readme none"
   },
   "keywords": [
     "tcp",
@@ -28,6 +29,7 @@
     "rollup": "^4.0.0",
     "rollup-plugin-esbuild": "^6.2.1",
     "tslib": "^2.6.0",
+    "typedoc": "^0.25.13",
     "typescript": "^5.0.0"
   }
 }

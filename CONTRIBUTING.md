@@ -6,19 +6,21 @@ Thank you for your interest in contributing to browser-socket! This project enab
 
 ### Prerequisites
 
-- Node.js 18+ 
+- Node.js 18+
 - npm or yarn
 - Basic understanding of TCP networking and WebSockets
 
 ### Development Setup
 
 1. **Fork and clone the repository:**
+
 ```bash
 git clone https://github.com/your-username/browser-socket.git
 cd browser-socket
 ```
 
 2. **Install dependencies:**
+
 ```bash
 # Server
 cd server && npm install
@@ -28,15 +30,17 @@ cd ../client && npm install
 ```
 
 3. **Build and test:**
+
 ```bash
 # Server
 cd server && npm run build
 
-# Client  
+# Client
 cd ../client && npm run build
 ```
 
 4. **Run examples:**
+
 ```bash
 # Start demo server
 cd demo-server && npm install && npm start
@@ -70,7 +74,7 @@ open examples/dns/index.html
 #### What We Need Help With
 
 - **Protocol improvements** - Enhance the binary wire protocol
-- **Performance optimizations** - Reduce latency and improve throughput  
+- **Performance optimizations** - Reduce latency and improve throughput
 - **Browser compatibility** - Test and fix issues across browsers
 - **Error handling** - Better error messages and recovery
 - **Documentation** - API docs, tutorials, examples
@@ -80,16 +84,19 @@ open examples/dns/index.html
 #### Development Guidelines
 
 1. **Follow existing patterns:**
+
    - Look at existing code style and conventions
    - Use the same libraries and utilities already in the codebase
    - Match naming conventions and file structure
 
 2. **Keep dependencies minimal:**
+
    - No third-party libraries except built-in Node.js modules
    - Client-side code should be vanilla JavaScript/TypeScript
    - Server uses only the `ws` WebSocket library
 
 3. **Write modular, readable code:**
+
    - Prioritize readability over premature optimization
    - Keep functions focused and well-named
    - Add comments for complex protocol logic
@@ -102,21 +109,25 @@ open examples/dns/index.html
 #### Pull Request Process
 
 1. **Create a feature branch:**
+
 ```bash
 git checkout -b feature/your-feature-name
 ```
 
 2. **Make your changes:**
+
    - Follow the coding guidelines above
    - Keep commits focused and well-described
    - Update documentation if needed
 
 3. **Test thoroughly:**
+
    - Build both client and server
    - Run existing examples
    - Test your new functionality
 
 4. **Submit the PR:**
+
    - Use the pull request template
    - Describe what you changed and why
    - Link any related issues
@@ -133,7 +144,6 @@ git checkout -b feature/your-feature-name
 
 - **Server (`/server/src/`)**: WebSocket transport and TCP connection handling
 - **Client (`/client/src/`)**: Browser-compatible TCP socket API
-- **Protocol (`protocol.ts`)**: Binary wire protocol for both sides
 - **Examples (`/examples/`)**: Demo applications
 
 ### Wire Protocol
@@ -163,7 +173,7 @@ git checkout -b feature/your-feature-name
 ### Code Comments
 
 - Comment complex protocol logic
-- Explain non-obvious design decisions  
+- Explain non-obvious design decisions
 - Document public APIs clearly
 - Keep comments up-to-date with code changes
 

@@ -1,5 +1,38 @@
-// Client-side WebSocket transport with binary wire protocol
+/**
+ * @fileoverview Client-side WebSocket transport with binary wire protocol
+ * 
+ * This module provides a browser-compatible TCP networking API that enables
+ * browsers to create TCP servers and clients through WebSocket multiplexing.
+ * All TCP connections are multiplexed through a single WebSocket connection
+ * to a Node.js bridge server.
+ * 
+ * @example
+ * ```javascript
+ * // Connect to WebSocket bridge
+ * const ws = new WebSocket('ws://localhost:8080');
+ * const net = new Net(ws);
+ * 
+ * // Create a TCP client
+ * const socket = new net.Socket();
+ * socket.connect(6379, 'localhost', () => {
+ *   console.log('Connected to Redis');
+ *   socket.write('PING\r\n');
+ * });
+ * 
+ * // Create a TCP server
+ * const server = net.createServer((socket) => {
+ *   socket.write('Hello from browser server!');
+ *   socket.end();
+ * });
+ * server.listen(3000);
+ * ```
+ */
 
+/**
+ * Protocol flags for frame types in the binary wire protocol
+ * @readonly
+ * @enum {number}
+ */
 const FLAGS = {
   DATA: 0, // 0x00 - no flag set
   SYN: 1, // 0x01 - connect
@@ -123,14 +156,12 @@ class FrameParser {
 
   addData(data: Uint8Array | ArrayBuffer): Frame[] {
     // Ensure data is Uint8Array
-    if (data instanceof ArrayBuffer) {
-      data = new Uint8Array(data);
-    }
+    const dataArray = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
 
     // Concatenate buffers
-    const newBuffer = new Uint8Array(this.buffer.length + data.length);
+    const newBuffer = new Uint8Array(this.buffer.length + dataArray.length);
     newBuffer.set(this.buffer, 0);
-    newBuffer.set(data, this.buffer.length);
+    newBuffer.set(dataArray, this.buffer.length);
     this.buffer = newBuffer;
 
     this.parseFrames();
@@ -159,16 +190,51 @@ class FrameParser {
   }
 }
 
+/**
+ * Represents a TCP socket connection that can be used as a client to connect
+ * to remote servers or as a server-side socket when accepting connections.
+ * 
+ * @example
+ * ```javascript
+ * // TCP client usage
+ * const socket = new net.Socket();
+ * socket.connect(80, 'example.com', () => {
+ *   console.log('Connected to web server');
+ *   socket.write('GET / HTTP/1.1\r\nHost: example.com\r\n\r\n');
+ * });
+ * 
+ * socket.on('data', (data) => {
+ *   console.log('Received:', data.toString());
+ * });
+ * 
+ * socket.on('end', () => {
+ *   console.log('Connection ended');
+ * });
+ * ```
+ */
 export class Socket {
+  /** Reference to the parent Net instance */
   public net: Net;
+  /** Unique stream identifier for this socket */
   public streamId: number;
+  /** Whether the socket is currently connected */
   public connected: boolean;
+  /** Whether the socket connection has ended */
   public ended: boolean;
+  /** Remote peer's IP address */
   public remoteAddress: string | null;
+  /** Remote peer's port number */
   public remotePort: number | null;
+  /** Complete address information for this socket */
   public addressInfo: AddressInfo | null;
+  /** Event listeners for socket events */
   private listeners: Record<string, EventListener[]>;
 
+  /**
+   * Creates a new Socket instance
+   * @param net - The Net instance managing this socket
+   * @param streamId - Optional stream ID (auto-generated if not provided)
+   */
   constructor(net: Net, streamId?: number) {
     this.net = net;
     this.streamId = streamId || net.getNextStreamId();
@@ -185,6 +251,15 @@ export class Socket {
     };
   }
 
+  /**
+   * Returns the local address information for this socket
+   * @returns Object with address, port, and family, or null if not connected
+   * @example
+   * ```javascript
+   * const addr = socket.address();
+   * console.log(`Local address: ${addr.address}:${addr.port}`);
+   * ```
+   */
   address(): { address: string; port: number; family: string } | null {
     if (!this.addressInfo) return null;
     // Return only address, port, family (not remoteAddress/remotePort)
@@ -192,6 +267,28 @@ export class Socket {
     return { address, port, family };
   }
 
+  /**
+   * Connects this socket to a remote server
+   * @param port - Port number or Unix socket path (if starts with 'unix://')
+   * @param host - Hostname or IP address (defaults to 'localhost')
+   * @param callback - Optional callback executed when connection is established
+   * @returns This socket instance for method chaining
+   * @example
+   * ```javascript
+   * // Connect to TCP server
+   * socket.connect(80, 'example.com', () => {
+   *   console.log('Connected!');
+   * });
+   * 
+   * // Connect to Unix socket
+   * socket.connect('unix:///tmp/my.sock');
+   * 
+   * // Connect to Redis
+   * socket.connect(6379, 'localhost', () => {
+   *   socket.write('PING\r\n');
+   * });
+   * ```
+   */
   connect(port: number | string, host?: string, callback?: () => void): this {
     this.net.connections.set(this.streamId, this);
 
@@ -216,6 +313,23 @@ export class Socket {
     return this;
   }
 
+  /**
+   * Sends data through this socket
+   * @param data - Data to send (string or binary data)
+   * @returns This socket instance for method chaining
+   * @example
+   * ```javascript
+   * // Send text data
+   * socket.write('Hello, world!');
+   * 
+   * // Send binary data
+   * const buffer = new Uint8Array([1, 2, 3, 4]);
+   * socket.write(buffer);
+   * 
+   * // Send HTTP request
+   * socket.write('GET / HTTP/1.1\r\nHost: example.com\r\n\r\n');
+   * ```
+   */
   write(data: string | Uint8Array): this {
     if (!this.ended) {
       // Convert string to Uint8Array if needed
@@ -226,6 +340,22 @@ export class Socket {
     return this;
   }
 
+  /**
+   * Closes the socket connection, optionally sending final data
+   * @param data - Optional final data to send before closing
+   * @returns This socket instance for method chaining
+   * @example
+   * ```javascript
+   * // Close without sending data
+   * socket.end();
+   * 
+   * // Send final data and close
+   * socket.end('Goodbye!\r\n');
+   * 
+   * // Send binary data and close
+   * socket.end(new Uint8Array([0, 1, 2]));
+   * ```
+   */
   end(data?: string | Uint8Array): this {
     if (!this.ended) {
       this.ended = true;
@@ -242,6 +372,18 @@ export class Socket {
     return this;
   }
 
+  /**
+   * Forcibly destroys the socket connection
+   * @param error - Optional error that caused the destruction
+   * @example
+   * ```javascript
+   * // Destroy with error
+   * socket.destroy(new Error('Connection timeout'));
+   * 
+   * // Destroy without error
+   * socket.destroy();
+   * ```
+   */
   destroy(error?: Error): void {
     if (!this.ended) {
       this.ended = true;
@@ -254,6 +396,30 @@ export class Socket {
     }
   }
 
+  /**
+   * Registers an event listener for socket events
+   * @param event - Event name ('data', 'connect', 'end', 'error')
+   * @param listener - Event handler function
+   * @returns This socket instance for method chaining
+   * @example
+   * ```javascript
+   * socket.on('connect', () => {
+   *   console.log('Socket connected');
+   * });
+   * 
+   * socket.on('data', (data) => {
+   *   console.log('Received data:', data.toString());
+   * });
+   * 
+   * socket.on('end', () => {
+   *   console.log('Socket ended');
+   * });
+   * 
+   * socket.on('error', (error) => {
+   *   console.error('Socket error:', error);
+   * });
+   * ```
+   */
   on(event: string, listener: EventListener): this {
     if (this.listeners[event]) {
       this.listeners[event].push(listener);
@@ -289,6 +455,31 @@ export class Socket {
   }
 }
 
+/**
+ * Represents a TCP server that can accept incoming connections from clients.
+ * Servers are created through the Net.createServer() method and can listen
+ * on TCP ports or Unix sockets.
+ * 
+ * @example
+ * ```javascript
+ * const server = net.createServer((socket) => {
+ *   console.log('Client connected');
+ *   
+ *   socket.on('data', (data) => {
+ *     console.log('Received:', data.toString());
+ *     socket.write('Echo: ' + data.toString());
+ *   });
+ *   
+ *   socket.on('end', () => {
+ *     console.log('Client disconnected');
+ *   });
+ * });
+ * 
+ * server.listen(3000, () => {
+ *   console.log('Server listening on port 3000');
+ * });
+ * ```
+ */
 export class NetServer {
   private net: Net;
   private connectionListener: ((socket: Socket) => void) | null;
@@ -298,6 +489,11 @@ export class NetServer {
   private addressInfo: AddressInfo | null;
   private listenCallback: (() => void) | null;
 
+  /**
+   * Creates a new NetServer instance
+   * @param net - The Net instance managing this server
+   * @param connectionListener - Optional callback for handling new connections
+   */
   constructor(net: Net, connectionListener?: (socket: Socket) => void) {
     this.net = net;
     this.connectionListener = connectionListener || null;
@@ -308,6 +504,28 @@ export class NetServer {
     this.listenCallback = null;
   }
 
+  /**
+   * Starts the server listening for connections on the specified port
+   * @param port - Port number or Unix socket path (if starts with 'unix://')
+   * @param callback - Optional callback executed when server starts listening
+   * @returns This server instance for method chaining
+   * @example
+   * ```javascript
+   * // Listen on TCP port
+   * server.listen(3000, () => {
+   *   console.log('Server listening on port 3000');
+   * });
+   * 
+   * // Listen on Unix socket
+   * server.listen('unix:///tmp/my-server.sock');
+   * 
+   * // Listen on specific interface
+   * server.listen(8080, () => {
+   *   const addr = server.address();
+   *   console.log(`Server listening on ${addr.address}:${addr.port}`);
+   * });
+   * ```
+   */
   listen(port: number | string, callback?: () => void): this {
     this.port = port;
     this.listening = true;
@@ -337,6 +555,18 @@ export class NetServer {
     }
   }
 
+  /**
+   * Returns the server's address information
+   * @returns AddressInfo object with server address details, or null if not listening
+   * @example
+   * ```javascript
+   * const addr = server.address();
+   * if (addr) {
+   *   console.log(`Server bound to ${addr.address}:${addr.port}`);
+   *   console.log(`Address family: ${addr.family}`);
+   * }
+   * ```
+   */
   address(): AddressInfo | null {
     return this.addressInfo;
   }
@@ -347,6 +577,19 @@ export class NetServer {
     }
   }
 
+  /**
+   * Stops the server from accepting new connections and closes all existing connections
+   * @param callback - Optional callback executed when server is closed
+   * @example
+   * ```javascript
+   * server.close(() => {
+   *   console.log('Server closed');
+   * });
+   * 
+   * // Or without callback
+   * server.close();
+   * ```
+   */
   close(callback?: () => void): void {
     if (this.listening && this.listenStreamId !== null) {
       this.net.servers.delete(this.listenStreamId);
@@ -365,6 +608,31 @@ export class NetServer {
   }
 }
 
+/**
+ * Main networking class that manages WebSocket transport and provides
+ * TCP networking capabilities to the browser. This class handles
+ * multiplexing multiple TCP connections through a single WebSocket.
+ * 
+ * @example
+ * ```javascript
+ * // Connect to WebSocket bridge server
+ * const ws = new WebSocket('ws://localhost:8080');
+ * const net = new Net(ws);
+ * 
+ * // Wait for WebSocket to open
+ * ws.onopen = () => {
+ *   // Create TCP client
+ *   const client = new net.Socket();
+ *   client.connect(80, 'example.com');
+ *   
+ *   // Create TCP server
+ *   const server = net.createServer((socket) => {
+ *     console.log('New connection');
+ *   });
+ *   server.listen(3000);
+ * };
+ * ```
+ */
 export class Net {
   private ws: WebSocket;
   public connections: Map<number, Socket>;
@@ -373,6 +641,24 @@ export class Net {
   private frameParser: FrameParser;
   public Socket: new () => Socket;
 
+  /**
+   * Creates a new Net instance connected to a WebSocket bridge server
+   * @param ws - WebSocket connection to the bridge server
+   * @example
+   * ```javascript
+   * const ws = new WebSocket('ws://localhost:8080');
+   * const net = new Net(ws);
+   * 
+   * ws.onopen = () => {
+   *   console.log('Connected to bridge server');
+   *   // Now you can create sockets and servers
+   * };
+   * 
+   * ws.onerror = (error) => {
+   *   console.error('WebSocket error:', error);
+   * };
+   * ```
+   */
   constructor(ws: WebSocket) {
     this.ws = ws;
     this.connections = new Map();
@@ -392,6 +678,30 @@ export class Net {
     } as any;
   }
 
+  /**
+   * Creates a new TCP server that can accept incoming connections
+   * @param connectionListener - Optional callback for handling new connections
+   * @returns NetServer instance
+   * @example
+   * ```javascript
+   * // HTTP-like server
+   * const server = net.createServer((socket) => {
+   *   socket.write('HTTP/1.1 200 OK\r\n');
+   *   socket.write('Content-Type: text/plain\r\n\r\n');
+   *   socket.write('Hello from browser server!');
+   *   socket.end();
+   * });
+   * 
+   * // Echo server
+   * const echoServer = net.createServer((socket) => {
+   *   socket.on('data', (data) => {
+   *     socket.write(data); // Echo back received data
+   *   });
+   * });
+   * 
+   * server.listen(3000);
+   * ```
+   */
   createServer(connectionListener?: (socket: Socket) => void): NetServer {
     return new NetServer(this, connectionListener);
   }

@@ -76,7 +76,18 @@ const net = new Net("ws://localhost:8080");
 // Now you can create servers and sockets!
 ```
 
+## 📖 API Documentation
+
+### 📱 [Client API Reference](https://gvibehacker.github.io/browser-socket/docs/client/)
+Complete documentation for the browser-side API including `Net`, `Socket`, and `NetServer` classes. Learn how to create TCP clients and servers in the browser.
+
+### 🖥️ [Server API Reference](https://gvibehacker.github.io/browser-socket/docs/server/)  
+Node.js server-side API documentation covering `Transport`, `Connection`, and `Socket` classes for WebSocket bridge implementation.
+
 ## 📚 Examples
+
+### 🌉 [Server Bridge Setup](./examples/bridge)
+**Essential setup guide** - Shows how to configure the Node.js WebSocket bridge server to forward TCP traffic between browsers and servers. Start here to get browser-socket working.
 
 ### 🌐 [Web Server Example](./examples/web-server) | [🚀 Live Demo](https://gvibehacker.github.io/browser-socket/examples/web-server/)
 
