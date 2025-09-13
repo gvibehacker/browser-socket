@@ -1,6 +1,6 @@
 {
   "name": "@gvibehacker/browser-socket-client",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Client library to enable browser access to native TCP sockets",
   "main": "dist/index.cjs.js",
   "module": "dist/index.esm.js",

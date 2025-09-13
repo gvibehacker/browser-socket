@@ -1,24 +1,24 @@
 /**
  * @fileoverview Client-side WebSocket transport with binary wire protocol
- * 
+ *
  * This module provides a browser-compatible TCP networking API that enables
  * browsers to create TCP servers and clients through WebSocket multiplexing.
- * All TCP connections are multiplexed through a single WebSocket connection
+ * All TCP sockets are multiplexed through a single WebSocket connection
  * to a Node.js bridge server.
- * 
+ *
  * @example
  * ```javascript
  * // Connect to WebSocket bridge
  * const ws = new WebSocket('ws://localhost:8080');
  * const net = new Net(ws);
- * 
+ *
  * // Create a TCP client
  * const socket = new net.Socket();
  * socket.connect(6379, 'localhost', () => {
  *   console.log('Connected to Redis');
  *   socket.write('PING\r\n');
  * });
- * 
+ *
  * // Create a TCP server
  * const server = net.createServer((socket) => {
  *   socket.write('Hello from browser server!');
@@ -70,12 +70,8 @@ type EventListener = (...args: any[]) => void;
 function encodeFrame(
   flag: number,
   streamId: number,
-  payload: Uint8Array | string = new Uint8Array(0)
+  payload: Uint8Array
 ): Uint8Array {
-  if (typeof payload === "string") {
-    payload = new TextEncoder().encode(payload);
-  }
-
   const length = payload.length;
   if (length > 0xffffff) {
     throw new Error("Payload too large: exceeds 24-bit length limit");
@@ -146,15 +142,10 @@ function formatSynPayload(
 }
 
 class FrameParser {
-  private buffer: Uint8Array;
-  private frames: Frame[];
+  private buffer: Uint8Array = new Uint8Array(0);
+  private frames: Frame[] = [];
 
-  constructor() {
-    this.buffer = new Uint8Array(0);
-    this.frames = [];
-  }
-
-  addData(data: Uint8Array | ArrayBuffer): Frame[] {
+  addData(data: Uint8Array): Frame[] {
     // Ensure data is Uint8Array
     const dataArray = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
 
@@ -192,8 +183,8 @@ class FrameParser {
 
 /**
  * Represents a TCP socket connection that can be used as a client to connect
- * to remote servers or as a server-side socket when accepting connections.
- * 
+ * to remote servers or as a server-side socket when accepting sockets.
+ *
  * @example
  * ```javascript
  * // TCP client usage
@@ -202,11 +193,11 @@ class FrameParser {
  *   console.log('Connected to web server');
  *   socket.write('GET / HTTP/1.1\r\nHost: example.com\r\n\r\n');
  * });
- * 
+ *
  * socket.on('data', (data) => {
  *   console.log('Received:', data.toString());
  * });
- * 
+ *
  * socket.on('end', () => {
  *   console.log('Connection ended');
  * });
@@ -218,17 +209,24 @@ export class Socket {
   /** Unique stream identifier for this socket */
   public streamId: number;
   /** Whether the socket is currently connected */
-  public connected: boolean;
+  public connected: boolean = false;
   /** Whether the socket connection has ended */
-  public ended: boolean;
+  public ended: boolean = false;
+  /** Whether the socket connection has ended by remote */
+  public remoteEnded: boolean = false;
   /** Remote peer's IP address */
-  public remoteAddress: string | null;
+  public remoteAddress: string | null = null;
   /** Remote peer's port number */
-  public remotePort: number | null;
+  public remotePort: number | null = null;
   /** Complete address information for this socket */
-  public addressInfo: AddressInfo | null;
+  public addressInfo: AddressInfo | null = null;
   /** Event listeners for socket events */
-  private listeners: Record<string, EventListener[]>;
+  private listeners: Record<string, EventListener[]> = {
+    data: [],
+    end: [],
+    error: [],
+    connect: [],
+  };
 
   /**
    * Creates a new Socket instance
@@ -238,17 +236,6 @@ export class Socket {
   constructor(net: Net, streamId?: number) {
     this.net = net;
     this.streamId = streamId || net.getNextStreamId();
-    this.connected = false;
-    this.ended = false;
-    this.remoteAddress = null;
-    this.remotePort = null;
-    this.addressInfo = null;
-    this.listeners = {
-      data: [],
-      end: [],
-      error: [],
-      connect: [],
-    };
   }
 
   /**
@@ -279,10 +266,10 @@ export class Socket {
    * socket.connect(80, 'example.com', () => {
    *   console.log('Connected!');
    * });
-   * 
+   *
    * // Connect to Unix socket
    * socket.connect('unix:///tmp/my.sock');
-   * 
+   *
    * // Connect to Redis
    * socket.connect(6379, 'localhost', () => {
    *   socket.write('PING\r\n');
@@ -290,7 +277,7 @@ export class Socket {
    * ```
    */
   connect(port: number | string, host?: string, callback?: () => void): this {
-    this.net.connections.set(this.streamId, this);
+    this.net.sockets.set(this.streamId, this);
 
     if (callback) {
       this.on("connect", callback);
@@ -316,60 +303,44 @@ export class Socket {
   /**
    * Sends data through this socket
    * @param data - Data to send (string or binary data)
-   * @returns This socket instance for method chaining
+   * @returns True if data was sent, false if socket is closed
    * @example
    * ```javascript
    * // Send text data
    * socket.write('Hello, world!');
-   * 
+   *
    * // Send binary data
    * const buffer = new Uint8Array([1, 2, 3, 4]);
    * socket.write(buffer);
-   * 
+   *
    * // Send HTTP request
    * socket.write('GET / HTTP/1.1\r\nHost: example.com\r\n\r\n');
    * ```
    */
-  write(data: string | Uint8Array): this {
-    if (!this.ended) {
-      // Convert string to Uint8Array if needed
-      const payload =
-        typeof data === "string" ? new TextEncoder().encode(data) : data;
-      this.net.sendFrame(FLAGS.DATA, this.streamId, payload);
-    }
-    return this;
+  write(data: string | Uint8Array): boolean {
+    if (this.ended) return false;
+    // Convert string to Uint8Array if needed
+    const payload =
+      typeof data === "string" ? new TextEncoder().encode(data) : data;
+    this.net.sendFrame(FLAGS.DATA, this.streamId, payload);
+    return true;
   }
 
   /**
-   * Closes the socket connection, optionally sending final data
-   * @param data - Optional final data to send before closing
-   * @returns This socket instance for method chaining
+   * Closes the socket connection
    * @example
    * ```javascript
    * // Close without sending data
    * socket.end();
-   * 
-   * // Send final data and close
-   * socket.end('Goodbye!\r\n');
-   * 
-   * // Send binary data and close
-   * socket.end(new Uint8Array([0, 1, 2]));
    * ```
    */
-  end(data?: string | Uint8Array): this {
-    if (!this.ended) {
-      this.ended = true;
-      // FIN can have optional data payload
-      if (data) {
-        const payload =
-          typeof data === "string" ? new TextEncoder().encode(data) : data;
-        this.net.sendFrame(FLAGS.FIN, this.streamId, payload);
-      } else {
-        this.net.sendFrame(FLAGS.FIN, this.streamId);
-      }
+  end() {
+    if (this.ended) return this;
+    this.ended = true;
+    this.net.sendFrame(FLAGS.FIN, this.streamId);
+    if (this.remoteEnded) {
+      this.net.sockets.delete(this.streamId);
     }
-
-    return this;
   }
 
   /**
@@ -379,21 +350,21 @@ export class Socket {
    * ```javascript
    * // Destroy with error
    * socket.destroy(new Error('Connection timeout'));
-   * 
+   *
    * // Destroy without error
    * socket.destroy();
    * ```
    */
   destroy(error?: Error): void {
-    if (!this.ended) {
-      this.ended = true;
-      // Send RST frame with optional error message payload
-      const payload = error
-        ? new TextEncoder().encode(error.toString())
-        : new Uint8Array(0);
-      this.net.sendFrame(FLAGS.RST, this.streamId, payload);
-      this.net.connections.delete(this.streamId);
-    }
+    if (this.ended && this.remoteEnded) return;
+    this.ended = true;
+    this.remoteEnded = true;
+    // Send RST frame with optional error message payload
+    const payload = error
+      ? new TextEncoder().encode(error.toString())
+      : new Uint8Array(0);
+    this.net.sendFrame(FLAGS.RST, this.streamId, payload);
+    this.net.sockets.delete(this.streamId);
   }
 
   /**
@@ -406,15 +377,15 @@ export class Socket {
    * socket.on('connect', () => {
    *   console.log('Socket connected');
    * });
-   * 
+   *
    * socket.on('data', (data) => {
    *   console.log('Received data:', data.toString());
    * });
-   * 
+   *
    * socket.on('end', () => {
    *   console.log('Socket ended');
    * });
-   * 
+   *
    * socket.on('error', (error) => {
    *   console.error('Socket error:', error);
    * });
@@ -435,46 +406,28 @@ export class Socket {
       }
     }
   }
-
-  handleConnected(): void {
-    this.connected = true;
-    this.emit("connect");
-  }
-
-  handleData(data: Uint8Array): void {
-    this.emit("data", data);
-  }
-
-  handleEnd(): void {
-    this.ended = true;
-    this.emit("end");
-  }
-
-  handleError(error: string): void {
-    this.emit("error", error);
-  }
 }
 
 /**
- * Represents a TCP server that can accept incoming connections from clients.
+ * Represents a TCP server that can accept incoming sockets from clients.
  * Servers are created through the Net.createServer() method and can listen
  * on TCP ports or Unix sockets.
- * 
+ *
  * @example
  * ```javascript
  * const server = net.createServer((socket) => {
  *   console.log('Client connected');
- *   
+ *
  *   socket.on('data', (data) => {
  *     console.log('Received:', data.toString());
  *     socket.write('Echo: ' + data.toString());
  *   });
- *   
+ *
  *   socket.on('end', () => {
  *     console.log('Client disconnected');
  *   });
  * });
- * 
+ *
  * server.listen(3000, () => {
  *   console.log('Server listening on port 3000');
  * });
@@ -483,29 +436,24 @@ export class Socket {
 export class NetServer {
   private net: Net;
   private connectionListener: ((socket: Socket) => void) | null;
-  private port: number | string | null;
-  private listening: boolean;
-  private listenStreamId: number | null;
-  private addressInfo: AddressInfo | null;
-  private listenCallback: (() => void) | null;
+  private port: number | string | null = null;
+  private listening: boolean = false;
+  private listenStreamId: number | null = null;
+  private addressInfo: AddressInfo | null = null;
+  private listenCallback: (() => void) | null = null;
 
   /**
    * Creates a new NetServer instance
    * @param net - The Net instance managing this server
-   * @param connectionListener - Optional callback for handling new connections
+   * @param connectionListener - Optional callback for handling new sockets
    */
   constructor(net: Net, connectionListener?: (socket: Socket) => void) {
     this.net = net;
     this.connectionListener = connectionListener || null;
-    this.port = null;
-    this.listening = false;
-    this.listenStreamId = null;
-    this.addressInfo = null;
-    this.listenCallback = null;
   }
 
   /**
-   * Starts the server listening for connections on the specified port
+   * Starts the server listening for sockets on the specified port
    * @param port - Port number or Unix socket path (if starts with 'unix://')
    * @param callback - Optional callback executed when server starts listening
    * @returns This server instance for method chaining
@@ -515,10 +463,10 @@ export class NetServer {
    * server.listen(3000, () => {
    *   console.log('Server listening on port 3000');
    * });
-   * 
+   *
    * // Listen on Unix socket
    * server.listen('unix:///tmp/my-server.sock');
-   * 
+   *
    * // Listen on specific interface
    * server.listen(8080, () => {
    *   const addr = server.address();
@@ -578,19 +526,13 @@ export class NetServer {
   }
 
   /**
-   * Stops the server from accepting new connections and closes all existing connections
-   * @param callback - Optional callback executed when server is closed
+   * Stops the server from accepting new sockets and closes all existing sockets
    * @example
    * ```javascript
-   * server.close(() => {
-   *   console.log('Server closed');
-   * });
-   * 
-   * // Or without callback
    * server.close();
    * ```
    */
-  close(callback?: () => void): void {
+  close(): void {
     if (this.listening && this.listenStreamId !== null) {
       this.net.servers.delete(this.listenStreamId);
       this.listening = false;
@@ -601,30 +543,26 @@ export class NetServer {
       );
       this.net.sendFrame(FLAGS.RST, this.listenStreamId, payload);
     }
-
-    if (callback) {
-      callback();
-    }
   }
 }
 
 /**
  * Main networking class that manages WebSocket transport and provides
  * TCP networking capabilities to the browser. This class handles
- * multiplexing multiple TCP connections through a single WebSocket.
- * 
+ * multiplexing multiple TCP sockets through a single WebSocket.
+ *
  * @example
  * ```javascript
  * // Connect to WebSocket bridge server
  * const ws = new WebSocket('ws://localhost:8080');
  * const net = new Net(ws);
- * 
+ *
  * // Wait for WebSocket to open
  * ws.onopen = () => {
  *   // Create TCP client
  *   const client = new net.Socket();
  *   client.connect(80, 'example.com');
- *   
+ *
  *   // Create TCP server
  *   const server = net.createServer((socket) => {
  *     console.log('New connection');
@@ -635,10 +573,10 @@ export class NetServer {
  */
 export class Net {
   private ws: WebSocket;
-  public connections: Map<number, Socket>;
-  public servers: Map<number, NetServer>;
-  private nextStreamId: number;
-  private frameParser: FrameParser;
+  public sockets: Map<number, Socket> = new Map();
+  public servers: Map<number, NetServer> = new Map();
+  private nextStreamId: number = 1;
+  private frameParser: FrameParser = new FrameParser();
   public Socket: new () => Socket;
 
   /**
@@ -648,12 +586,12 @@ export class Net {
    * ```javascript
    * const ws = new WebSocket('ws://localhost:8080');
    * const net = new Net(ws);
-   * 
+   *
    * ws.onopen = () => {
    *   console.log('Connected to bridge server');
    *   // Now you can create sockets and servers
    * };
-   * 
+   *
    * ws.onerror = (error) => {
    *   console.error('WebSocket error:', error);
    * };
@@ -661,11 +599,6 @@ export class Net {
    */
   constructor(ws: WebSocket) {
     this.ws = ws;
-    this.connections = new Map();
-    this.servers = new Map();
-    this.nextStreamId = 1; // Client uses odd IDs (1, 3, 5...) for outgoing connections
-    this.frameParser = new FrameParser();
-
     this.ws.addEventListener("message", this.handleMessage.bind(this));
     this.ws.addEventListener("close", this.handleClose.bind(this));
 
@@ -679,8 +612,8 @@ export class Net {
   }
 
   /**
-   * Creates a new TCP server that can accept incoming connections
-   * @param connectionListener - Optional callback for handling new connections
+   * Creates a new TCP server that can accept incoming sockets
+   * @param connectionListener - Optional callback for handling new sockets
    * @returns NetServer instance
    * @example
    * ```javascript
@@ -691,14 +624,14 @@ export class Net {
    *   socket.write('Hello from browser server!');
    *   socket.end();
    * });
-   * 
+   *
    * // Echo server
    * const echoServer = net.createServer((socket) => {
    *   socket.on('data', (data) => {
    *     socket.write(data); // Echo back received data
    *   });
    * });
-   * 
+   *
    * server.listen(3000);
    * ```
    */
@@ -722,9 +655,9 @@ export class Net {
 
   private processFrames(data: Uint8Array): void {
     const frames = this.frameParser.addData(data);
-
     for (const frame of frames) {
       const { flag, streamId, payload } = frame;
+
       let socket: Socket | undefined;
       switch (flag) {
         case FLAGS.SYN:
@@ -749,26 +682,23 @@ export class Net {
               // Set remote address and port
               socket.remoteAddress = remoteAddress;
               socket.remotePort = remotePort;
-              this.connections.set(streamId, socket);
+              this.sockets.set(streamId, socket);
               // Send ACK to acknowledge the connection
               this.sendFrame(FLAGS.ACK, streamId);
               targetServer.handleConnection(socket);
             } else {
-              // Server not found, send RST to reject the connection
-              const errorMsg = new TextEncoder().encode(
-                "No server listening on this stream"
+              this.sendFrame(
+                FLAGS.RST,
+                streamId,
+                new TextEncoder().encode("No server listening on this stream")
               );
-              this.sendFrame(FLAGS.RST, streamId, errorMsg);
             }
           } else {
-            console.error(
-              "Invalid SYN payload from server, expected at least 5 bytes"
+            this.sendFrame(
+              FLAGS.RST,
+              streamId,
+              new TextEncoder().encode("Invalid SYN payload format")
             );
-            // Send RST for invalid payload
-            const errorMsg = new TextEncoder().encode(
-              "Invalid SYN payload format"
-            );
-            this.sendFrame(FLAGS.RST, streamId, errorMsg);
           }
           break;
 
@@ -784,12 +714,18 @@ export class Net {
                 );
                 server.handleListenAck(addressInfo);
               } catch (error) {
-                console.error("Failed to parse server address info:", error);
+                this.sendFrame(
+                  FLAGS.RST,
+                  streamId,
+                  new TextEncoder().encode(
+                    "Failed to parse server address info"
+                  )
+                );
               }
             }
           } else {
             // ACK for regular connection
-            socket = this.connections.get(streamId);
+            socket = this.sockets.get(streamId);
             if (socket) {
               // Parse address info if present in payload
               if (payload.length > 0) {
@@ -804,64 +740,89 @@ export class Net {
                   if (addressInfo.remotePort)
                     socket.remotePort = addressInfo.remotePort;
                 } catch (error) {
-                  console.error("Failed to parse socket address info:", error);
+                  this.sendFrame(
+                    FLAGS.RST,
+                    streamId,
+                    new TextEncoder().encode(
+                      "Failed to parse socket address info"
+                    )
+                  );
+                  this.sockets.delete(streamId);
                 }
               }
-              socket.handleConnected();
+              socket.connected = true;
+              socket.emit("connect");
+            } else {
+              this.sendFrame(
+                FLAGS.RST,
+                streamId,
+                new TextEncoder().encode("Invalid stream id")
+              );
             }
           }
           break;
 
         case FLAGS.DATA:
           // Data received
-          socket = this.connections.get(streamId);
-          if (socket) {
-            socket.handleData(payload);
-          }
+          socket = this.sockets.get(streamId);
+          if (socket && !socket.remoteEnded) {
+            socket.emit("data", data);
+          } else
+            this.sendFrame(
+              FLAGS.RST,
+              streamId,
+              new TextEncoder().encode("Invalid stream id")
+            );
           break;
 
         case FLAGS.FIN:
-          // Connection ended - FIN can have optional data payload
-          socket = this.connections.get(streamId);
+          // Connection ended
+          socket = this.sockets.get(streamId);
           if (socket) {
-            if (payload.length > 0) {
-              // Process any final data before ending
-              socket.handleData(payload);
+            if (socket.remoteEnded) return;
+            socket.remoteEnded = true;
+            if (socket.ended) {
+              this.sockets.delete(streamId);
             }
-            socket.handleEnd();
-            this.connections.delete(streamId);
-          }
+            socket.emit("end");
+          } else
+            this.sendFrame(
+              FLAGS.RST,
+              streamId,
+              new TextEncoder().encode("Invalid stream id")
+            );
           break;
 
         case FLAGS.RST:
           // Connection reset/error - RST can have optional data payload
-          socket = this.connections.get(streamId);
-          if (socket) {
-            const errorMsg =
-              payload.length > 0
-                ? new TextDecoder().decode(payload)
-                : "Connection reset";
-            socket.handleError(errorMsg);
-            this.connections.delete(streamId);
-          }
+          socket = this.sockets.get(streamId);
+          if (!socket) return;
+          if (socket.ended && socket.remoteEnded) return;
+          socket.ended = true;
+          socket.remoteEnded = true;
+          this.sockets.delete(streamId);
+          const errorMsg =
+            payload.length > 0
+              ? new TextDecoder().decode(payload)
+              : "Connection reset";
+          socket.emit("error", errorMsg);
           break;
       }
     }
   }
 
   private handleClose(): void {
-    for (const socket of this.connections.values()) {
-      socket.handleEnd();
+    for (const socket of this.sockets.values()) {
+      if (socket.ended && socket.remoteEnded) continue;
+      socket.ended = true;
+      socket.remoteEnded = true;
+      socket.emit("error", "Connection reset");
     }
-    this.connections.clear();
+    this.sockets.clear();
     this.servers.clear();
   }
 
-  sendFrame(
-    flag: number,
-    streamId: number,
-    payload?: Uint8Array | string
-  ): void {
+  sendFrame(flag: number, streamId: number, payload?: Uint8Array): void {
     if (this.ws.readyState === WebSocket.OPEN) {
       const frame = encodeFrame(flag, streamId, payload || new Uint8Array(0));
       this.ws.send(frame);
