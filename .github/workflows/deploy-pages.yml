@@ -31,6 +31,7 @@ jobs:
           cache-dependency-path: |
             client/package-lock.json
             server/package-lock.json
+            cf-worker/package-lock.json
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -45,6 +46,12 @@ jobs:
           
           # Install dependencies and generate server docs
           cd server
+          npm ci
+          npm run docs
+          cd ..
+                    
+          # Install dependencies and generate cloudflare worker docs
+          cd cf-worker
           npm ci
           npm run docs
           cd ..
@@ -65,6 +72,9 @@ jobs:
           fi
           if [ -d "server/docs" ]; then
             cp -r server/docs _site/docs/server
+          fi
+          if [ -d "cf-worker/docs" ]; then
+            cp -r server/docs _site/docs/cloudflare-worker
           fi
 
       - name: Upload artifact
