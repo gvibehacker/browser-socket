@@ -53,8 +53,6 @@ type SocketEvents = {
   end: [];
   /** Emitted when an error occurs */
   error: [Error];
-  /** Emitted when a new connection is established (server sockets) */
-  connection: [Socket];
 };
 
 /**

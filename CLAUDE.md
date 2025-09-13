@@ -37,6 +37,10 @@ browser-socket is a WebSocket-based transport layer that allows browsers to comm
 
 - `index.ts` - Browser-compatible WebSocket transport with Node.js-like TCP API including Net class
 
+**Cloudflare Worker (`/cf-worker/src`)**:
+
+- Cloudflare Worker implementation for WebSocket transport
+
 ### Wire Protocol
 
 Binary protocol with 8-byte header + payload:
@@ -50,6 +54,12 @@ Binary protocol with 8-byte header + payload:
 - ACK to LISTEN from server contains server address info (JSON of Node.js server.address()) as payload
 - SYN from server will have payload of: 3 bytes stream id (stream id used in LISTEN) + 2 bytes port (uint16) + variable length host string
 - FIN/RST can have optional data payload
+
+#### Protocol Design Principles
+
+- **Client-triggered actions should not trigger event emission** - Actions initiated by the client should not cause events to be emitted back to the client to prevent feedback loops
+- **Invalid protocol format should trigger reset of stream** - Any malformed or invalid protocol data should immediately reset the affected stream to maintain protocol integrity
+- **RST is a final state and should not trigger further actions** - Reset frames represent terminal state and should not generate replies or additional payload processing
 
 ### Key Classes
 

@@ -153,6 +153,12 @@ git checkout -b feature/your-feature-name
 - Stream multiplexing with unique IDs
 - Binary payload for efficiency
 
+#### Protocol Design Principles
+
+- **Client-triggered actions should not trigger event emission** - Actions initiated by the client should not cause events to be emitted back to the client to prevent feedback loops
+- **Invalid protocol format should trigger reset of stream** - Any malformed or invalid protocol data should immediately reset the affected stream to maintain protocol integrity
+- **RST is a final state and should not trigger further actions** - Reset frames represent terminal state and should not generate replies or additional payload processing
+
 ### Testing Strategy
 
 - Manual testing with examples

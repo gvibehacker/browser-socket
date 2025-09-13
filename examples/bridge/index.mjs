@@ -28,7 +28,7 @@ transport.on("connection", (conn) => {
         remoteAddress: tcpSocket.remoteAddress,
         remotePort: tcpSocket.remotePort,
       };
-      socket.ack(Buffer.from(JSON.stringify(ackPayload)));
+      socket.ack(ackPayload);
     });
 
     tcpSocket.on("readable", () => {
@@ -117,15 +117,15 @@ transport.on("connection", (conn) => {
       const allocatedPort = addr.port;
 
       console.log(`Server listening on ${addr.address}:${allocatedPort}`);
-      socket.ack(Buffer.from(JSON.stringify(addr)));
+      socket.ack(addr);
     });
   });
 
-  conn.on("error", (error) => {
+  conn.ws.on("error", (error) => {
     console.error("Connection error:", error);
   });
 
-  conn.on("end", () => {
+  conn.ws.on("close", () => {
     console.log("WebSocket connection closed");
   });
 });
