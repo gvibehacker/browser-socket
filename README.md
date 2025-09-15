@@ -160,19 +160,19 @@ Cloudflare Worker API documentation covering `Connection` and `Socket` classes f
 
 **Essential setup guides** - Shows how to configure both Node.js and Cloudflare Worker WebSocket bridge servers to forward TCP traffic between browsers and external services. Start here to get browser-socket working.
 
-#### [Node.js Bridge](./examples/bridge/nodejs)
+#### [Node.js Bridge](./examples/bridge/index.mjs)
 
 Complete Node.js server setup with TCP forwarding and multiplexing.
 
-#### [Cloudflare Worker Bridge](./examples/bridge/cloudflare-worker)
+#### [Cloudflare Worker Bridge](./examples/cloudflare-worker/src/index.ts)
 
 Cloudflare Worker deployment with edge-based TCP connections using the connect API.
 
-### 🌐 [Web Server Example](./examples/web-server) | [🚀 Live Demo](https://gvibehacker.github.io/browser-socket/examples/web-server/)
+### 🌐 [Web Server Example](./examples/web-server/index.html) | [🚀 Live Demo](https://gvibehacker.github.io/browser-socket/examples/web-server/)
 
 Run a fully functional HTTP server directly in your browser. Demonstrates how to accept incoming connections and serve web content from a browser tab.
 
-### 🔍 [DNS Lookup Example](./examples/dns) | [🚀 Live Demo](https://gvibehacker.github.io/browser-socket/examples/dns/)
+### 🔍 [DNS Lookup Example](./examples/dns/index.html) | [🚀 Live Demo](https://gvibehacker.github.io/browser-socket/examples/dns/)
 
 Perform DNS lookups from the browser using a WebAssembly-compiled Go DNS resolver. Shows how browser-socket enables complex networking protocols in the browser.
 
