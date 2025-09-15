@@ -1,10 +1,11 @@
 import net from "net";
 import { WebSocketServer } from "ws";
 import { Transport } from "@gvibehacker/browser-socket-server";
+import { error } from "console";
 
 const PORT = 8080;
 
-const wss = new WebSocketServer({ port: PORT });
+const wss = new WebSocketServer({ port: PORT, perMessageDeflate: false });
 
 const transport = new Transport(wss);
 
@@ -15,50 +16,56 @@ transport.on("connection", (conn) => {
     console.log(`Connect request to ${addressInfo.host}:${addressInfo.port}`);
 
     // Create TCP connection to the requested address
-    const tcpSocket = new net.Socket();
+    const tcpSocket = net.connect(addressInfo.port, addressInfo.host);
 
-    tcpSocket.connect(addressInfo.port, addressInfo.host, () => {
+    tcpSocket.on("connect", () => {
       console.log(
         `TCP connection established to ${addressInfo.host}:${addressInfo.port}`
       );
 
       // Send ACK with connection info
-      const ackPayload = {
+      socket.ack({
         ...tcpSocket.address(),
         remoteAddress: tcpSocket.remoteAddress,
         remotePort: tcpSocket.remotePort,
-      };
-      socket.ack(ackPayload);
-    });
+      });
 
-    tcpSocket.on("readable", () => {
-      let chunk;
-      while ((chunk = tcpSocket.read()) !== null) {
-        socket.write(chunk);
-      }
-    });
+      const writer = socket.writable.getWriter();
+      tcpSocket.on("data", async (chunk) => {
+        try {
+          while (chunk) {
+            await writer.write(chunk);
+          }
+        } catch (err) {
+          writer.abort(String(err.message || err));
+        }
+      });
 
-    tcpSocket.on("end", () => {
-      socket.end();
+      tcpSocket.on("end", () => writer.close());
+
+      // Handle data from WebSocket to TCP using readable stream
+      socket.readable
+        .pipeTo(
+          new WritableStream({
+            write(chunk) {
+              tcpSocket.write(Buffer.from(chunk));
+            },
+            close() {
+              tcpSocket.end();
+            },
+            abort() {
+              tcpSocket.destroy();
+            },
+          })
+        )
+        .catch((e) => {
+          socket.destroy(Buffer.from(e.message));
+        });
     });
 
     tcpSocket.on("error", (error) => {
       console.error(`TCP socket error: ${error.message}`);
       socket.destroy(Buffer.from(error.message));
-    });
-
-    // Handle data from WebSocket to TCP
-    socket.on("data", (data) => {
-      tcpSocket.write(data);
-    });
-
-    socket.on("end", () => {
-      tcpSocket.end();
-    });
-
-    socket.on("error", (error) => {
-      console.error(`WebSocket stream error: ${error.message}`);
-      tcpSocket.destroy();
     });
   });
 
@@ -69,40 +76,46 @@ transport.on("connection", (conn) => {
       console.log(
         `Incoming connection - remoteAddress: "${tcpSocket.remoteAddress}", remotePort: ${tcpSocket.remotePort}`
       );
-
       // Create new WebSocket stream for this connection
-      const newSocket = socket.connect(
+      socket.connect(
         tcpSocket.remoteAddress,
-        tcpSocket.remotePort
-      );
+        tcpSocket.remotePort,
+        async (newSocket) => {
+          const reader = newSocket.readable.getReader();
+          const writer = newSocket.writable.getWriter();
+          tcpSocket.on("readable", async () => {
+            let chunk;
+            try {
+              while ((chunk = tcpSocket.read()) !== null) {
+                await writer.write(chunk);
+              }
+            } catch (err) {
+              writer.abort(String(err.message || err));
+            }
+          });
 
-      tcpSocket.on("readable", () => {
-        let chunk;
-        while ((chunk = tcpSocket.read()) !== null) {
-          newSocket.write(chunk);
+          tcpSocket.on("end", () => writer.close());
+
+          try {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) {
+                tcpSocket.end();
+                break;
+              }
+              tcpSocket.write(value);
+            }
+          } catch (e) {
+            console.error(`WebSocket stream error: ${e.message}`);
+            tcpSocket.destroy();
+          }
+          newSocket.destroy();
         }
-      });
-
-      tcpSocket.on("end", () => {
-        newSocket.end();
-      });
+      );
 
       tcpSocket.on("error", (error) => {
         console.error(`TCP socket error: ${error.message}`);
         newSocket.destroy(Buffer.from(error.message));
-      });
-
-      newSocket.on("data", (data) => {
-        tcpSocket.write(data);
-      });
-
-      newSocket.on("end", () => {
-        tcpSocket.end();
-      });
-
-      newSocket.on("error", (error) => {
-        console.error(`WebSocket stream error: ${error.message}`);
-        tcpSocket.destroy();
       });
     });
 
@@ -111,21 +124,22 @@ transport.on("connection", (conn) => {
       socket.destroy(Buffer.from(error.message));
     });
 
-    // Listen on port 0 (let Node.js allocate ephemeral port)
-    server.listen(0, addressInfo.host, () => {
+    server.listen(addressInfo.port, addressInfo.host, () => {
       const addr = server.address();
       const allocatedPort = addr.port;
 
       console.log(`Server listening on ${addr.address}:${allocatedPort}`);
       socket.ack(addr);
     });
+
+    socket.on("close", () => server.close());
   });
 
-  conn.ws.on("error", (error) => {
+  conn.on("error", (error) => {
     console.error("Connection error:", error);
   });
 
-  conn.ws.on("close", () => {
+  conn.on("end", () => {
     console.log("WebSocket connection closed");
   });
 });

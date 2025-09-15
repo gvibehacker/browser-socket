@@ -1,6 +1,6 @@
 {
   "name": "@gvibehacker/browser-socket-cloudflare-worker",
-  "version": "0.0.2",
+  "version": "0.1.1",
   "description": "Cloudflare worker library to enable browser access to native TCP sockets",
   "main": "dist/index.cjs.js",
   "module": "dist/index.esm.js",
@@ -33,7 +33,5 @@
     "typedoc": "^0.25.13",
     "typescript": "^5.0.0"
   },
-  "dependencies": {
-    "ws": "^8.18.3"
-  }
+  "dependencies": {}
 }

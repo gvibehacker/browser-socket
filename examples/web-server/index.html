@@ -249,14 +249,29 @@ const net = new BrowserSocket.Net(ws);
 const server = net.createServer((socket) => {
     let requestData = '';
     
-    socket.on('data', (data) => {
-        requestData += new TextDecoder().decode(data);
-        
-        // Check if we have complete HTTP request
-        if (requestData.includes('\r\n\r\n')) {
-            handleHttpRequest(socket, requestData);
+    // Use readable stream for data handling
+    const reader = socket.readable.getReader();
+    
+    async function readData() {
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                requestData += new TextDecoder().decode(value);
+                
+                // Check if we have complete HTTP request
+                if (requestData.includes('\r\n\r\n')) {
+                    handleHttpRequest(socket, requestData);
+                    break;
+                }
+            }
+        } catch (error) {
+            console.error('Error reading data:', error);
         }
-    });
+    }
+    
+    readData();
 });
 
 // Listen on ephemeral port
@@ -272,11 +287,13 @@ function handleHttpRequest(socket, request) {
     // Get custom response from textarea
     const response = document.getElementById('response-content').value;
     
-    socket.write(response);
-    socket.end();
+    // Use writable stream for response
+    const writer = socket.writable.getWriter();
+    writer.write(new TextEncoder().encode(response));
+    writer.close();
     
     // Log the request
-    logAccess(socket.remoteAddress || clientIP, method, path, 200);
+    logAccess(socket.remoteAddress || 'unknown', method, path, 200);
 }</div>
         </div>
         
@@ -295,7 +312,8 @@ Connection: close
     <h1>Hello from Browser-Socket!</h1>
     <p>This HTTP server is running in your browser.</p>
 </body>
-</html></textarea>
+</html>
+</textarea>
         </div>
         
         <div class="server-controls">
@@ -320,7 +338,7 @@ Connection: close
         </div>
     </div>
     
-    <script src="https://unpkg.com/@gvibehacker/browser-socket-client@0.0.2/dist/index.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@gvibehacker/browser-socket-client@0.1.0/dist/index.min.js"></script>
     <script>
         let wsPromise = null;
         let net = null;
@@ -386,18 +404,30 @@ Connection: close
                 let requestStartTime = Date.now();
                 let clientIP = socket.remoteAddress || 'unknown';
                 
-                socket.on('data', (data) => {
-                    requestData += new TextDecoder().decode(data);
-                    
-                    // Check if we have complete HTTP request (headers end with \r\n\r\n)
-                    if (requestData.includes('\r\n\r\n')) {
-                        handleHttpRequest(socket, requestData, clientIP, requestStartTime);
-                    }
-                });
+                // Use readable stream for data handling
+                const reader = socket.readable.getReader();
                 
-                socket.on('error', (error) => {
-                    logAccess(clientIP, 'ERROR', '-', 500, 0, requestStartTime);
-                });
+                async function readRequestData() {
+                    try {
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            
+                            requestData += new TextDecoder().decode(value);
+                            
+                            // Check if we have complete HTTP request (headers end with \r\n\r\n)
+                            if (requestData.includes('\r\n\r\n')) {
+                                handleHttpRequest(socket, requestData, clientIP, requestStartTime);
+                                break;
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error reading request data:', error);
+                        logAccess(clientIP, 'ERROR', '-', 500, 0, requestStartTime);
+                    }
+                }
+                
+                readRequestData();
             });
             
             httpServer.listen(0, () => {
@@ -456,8 +486,10 @@ Connection: close
                     response = `HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: ${contentLength}\r\nConnection: close\r\n\r\n${response}`;
                 }
                 
-                socket.write(response);
-                socket.end();
+                // Use writable stream for response
+                const writer = socket.writable.getWriter();
+                writer.write(new TextEncoder().encode(response));
+                writer.close();
                 
                 // Calculate response time
                 const responseTime = Date.now() - startTime;
@@ -472,8 +504,11 @@ Connection: close
             } catch (error) {
                 console.error('Error handling HTTP request:', error);
                 const errorResponse = 'HTTP/1.1 500 Internal Server Error\r\nContent-Length: 21\r\nConnection: close\r\n\r\nInternal Server Error';
-                socket.write(errorResponse);
-                socket.end();
+                
+                // Use writable stream for error response
+                const writer = socket.writable.getWriter();
+                writer.write(new TextEncoder().encode(errorResponse));
+                writer.close();
                 
                 logAccess(clientIP, 'ERROR', request.split(' ')[1] || '-', 500, errorResponse.length, startTime);
             }

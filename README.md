@@ -51,7 +51,17 @@ npm install @gvibehacker/browser-socket-server
 npm install @gvibehacker/browser-socket-client
 ```
 
+**Cloudflare Worker:**
+
+```bash
+npm install @gvibehacker/browser-socket-cloudflare-worker
+```
+
 ### Basic Setup
+
+Choose your bridge implementation:
+
+#### Option 1: Node.js Bridge Server
 
 1. **Start the WebSocket bridge server:**
 
@@ -76,25 +86,87 @@ const net = new Net("ws://localhost:8080");
 // Now you can create servers and sockets!
 ```
 
+#### Option 2: Cloudflare Worker Bridge
+
+1. **Deploy the Cloudflare Worker:**
+
+```javascript
+// worker.js
+import { Connection } from "@gvibehacker/browser-socket-cf-worker";
+
+export default {
+  async fetch(request, env, ctx) {
+    if (request.headers.get("Upgrade") === "websocket") {
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+
+      const connection = new Connection(server);
+
+      connection.addEventListener("connect", async (event) => {
+        const [socket, addressInfo] = event.detail;
+
+        const tcpSocket = connect({
+          hostname: addressInfo.host,
+          port: addressInfo.port,
+        });
+
+        socket.ack({
+          address: addressInfo.host,
+          port: addressInfo.port,
+          family: "IPv4",
+          remoteAddress: "0.0.0.0",
+          remotePort: 0,
+        });
+
+        socket.readable.pipeTo(tcpSocket.writable);
+        tcpSocket.readable.pipeTo(socket.writable);
+      });
+
+      return new Response(null, { status: 101, webSocket: client });
+    }
+    return new Response("Browser Socket Worker", { status: 200 });
+  },
+};
+```
+
+2. **Connect from the browser:**
+
+```javascript
+// Browser code
+import { Net } from "@gvibehacker/browser-socket-client";
+
+const net = new Net("wss://your-worker.your-subdomain.workers.dev");
+
+// Now you can create TCP connections through Cloudflare's edge!
+```
+
 ## 📖 API Documentation
 
 ### 📱 [Client API Reference](https://gvibehacker.github.io/browser-socket/docs/client/)
 
-Complete documentation for the browser-side API including `Net`, `Socket`, and `NetServer` classes. Learn how to create TCP clients and servers in the browser.
+Complete documentation for the browser-side API including `Net`, `Socket`, and `NetListener` classes. Learn how to create TCP clients and servers in the browser.
 
 ### 🖥️ [Server API Reference](https://gvibehacker.github.io/browser-socket/docs/server/)
 
 Node.js server-side API documentation covering `Transport`, `Connection`, and `Socket` classes for WebSocket bridge implementation.
 
-### 🖥️ [Cloudflare Worker API Reference](https://gvibehacker.github.io/browser-socket/docs/cloudflare-worker/)
+### ☁️ [Cloudflare Worker API Reference](https://gvibehacker.github.io/browser-socket/docs/cloudflare-worker/)
 
-Cloudflare Worker API documentation covering `Connection` and `Socket` classes for WebSocket bridge implementation.
+Cloudflare Worker API documentation covering `Connection` and `Socket` classes for WebSocket bridge implementation using Cloudflare's connect API and Web Streams.
 
 ## 📚 Examples
 
-### 🌉 [Server Bridge Setup](./examples/bridge)
+### 🌉 [Bridge Setup Examples](./examples/bridge)
 
-**Essential setup guide** - Shows how to configure the Node.js WebSocket bridge server to forward TCP traffic between browsers and servers. Start here to get browser-socket working.
+**Essential setup guides** - Shows how to configure both Node.js and Cloudflare Worker WebSocket bridge servers to forward TCP traffic between browsers and external services. Start here to get browser-socket working.
+
+#### [Node.js Bridge](./examples/bridge/nodejs)
+
+Complete Node.js server setup with TCP forwarding and multiplexing.
+
+#### [Cloudflare Worker Bridge](./examples/bridge/cloudflare-worker)
+
+Cloudflare Worker deployment with edge-based TCP connections using the connect API.
 
 ### 🌐 [Web Server Example](./examples/web-server) | [🚀 Live Demo](https://gvibehacker.github.io/browser-socket/examples/web-server/)
 
@@ -106,12 +178,23 @@ Perform DNS lookups from the browser using a WebAssembly-compiled Go DNS resolve
 
 ## 🏗 How It Works
 
-browser-socket creates a bridge between your browser and the Node.js networking stack:
+browser-socket creates a bridge between your browser and TCP networking through two deployment options:
+
+### Node.js Bridge
 
 1. **Browser** ↔️ **WebSocket** ↔️ **Node.js Bridge** ↔️ **TCP Network**
 2. All TCP streams are multiplexed through a single WebSocket connection
 3. Binary protocol ensures minimal overhead
 4. Stream IDs keep connections isolated
+
+### Cloudflare Worker Bridge
+
+1. **Browser** ↔️ **WebSocket** ↔️ **Cloudflare Worker** ↔️ **TCP Network**
+2. Uses Cloudflare's `connect()` API for TCP connections at the edge
+3. Web Streams API for efficient data piping
+4. Global distribution through Cloudflare's edge network
+
+Both implementations use the same binary protocol for complete compatibility.
 
 ## 🔒 Security Considerations
 

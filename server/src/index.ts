@@ -1,34 +1,107 @@
 /**
- * @fileoverview Server-side WebSocket transport with TCP connection handling
+ * @fileoverview Node.js WebSocket bridge server for browser TCP networking
  *
- * This module provides the Node.js server implementation for browser-socket,
+ * This module provides the server-side implementation of browser-socket,
  * enabling browsers to create TCP servers and clients through WebSocket
- * multiplexing. It handles the bridge between WebSocket connections from
- * browsers and native TCP networking on the Node.js side.
+ * multiplexing. It acts as a bridge between browser WebSocket connections
+ * and native Node.js TCP networking capabilities.
  *
- * @example
+ * The server handles binary protocol frames from browsers, manages multiple
+ * TCP connections per WebSocket, and coordinates between browser requests
+ * and the Node.js networking stack.
+ *
+ * @example Complete bridge server setup
  * ```javascript
  * import { WebSocketServer } from 'ws';
  * import { Transport } from '@gvibehacker/browser-socket-server';
+ * import net from 'net';
  *
- * // Create WebSocket server
- * const wss = new WebSocketServer({ port: 8080 });
+ * // Create WebSocket server for browser connections
+ * const wss = new WebSocketServer({
+ *   port: 8080,
+ *   perMessageDeflate: false // Binary protocol works better without compression
+ * });
+ *
  * const transport = new Transport(wss);
  *
- * transport.start();
  * transport.on('connection', (connection) => {
- *   console.log('Browser connected');
+ *   console.log('Browser connected via WebSocket');
  *
+ *   // Handle browser TCP client requests
  *   connection.on('connect', (socket, addressInfo) => {
- *     // Handle TCP client connection requests from browser
- *     connectToTcpServer(socket, addressInfo);
+ *     console.log(`Browser wants to connect to ${addressInfo.address}:${addressInfo.port}`);
+ *
+ *     // Create actual TCP connection
+ *     const tcpSocket = net.connect(addressInfo.port, addressInfo.address);
+ *
+ *     tcpSocket.on('connect', () => {
+ *       // Send connection acknowledgment to browser
+ *       socket.ack({
+ *         address: tcpSocket.localAddress!,
+ *         port: tcpSocket.localPort!,
+ *         family: tcpSocket.localFamily!,
+ *         remoteAddress: tcpSocket.remoteAddress!,
+ *         remotePort: tcpSocket.remotePort!
+ *       });
+ *
+ *       // Pipe data between browser and TCP server
+ *       tcpSocket.on('data', (data) => socket.write(data));
+ *       socket.readable.pipeTo(new WritableStream({
+ *         write(chunk) {
+ *           tcpSocket.write(Buffer.from(chunk));
+ *         }
+ *       }));
+ *     });
+ *
+ *     tcpSocket.on('error', (err) => {
+ *       socket.destroy(err.message);
+ *     });
  *   });
  *
- *   connection.on('listen', (socket, addressInfo) => {
- *     // Handle TCP server creation requests from browser
- *     createTcpServer(socket, addressInfo);
+ *   // Handle browser TCP server requests
+ *   connection.on('listen', (listenSocket, addressInfo) => {
+ *     console.log(`Browser wants to create server on ${addressInfo.address}:${addressInfo.port}`);
+ *
+ *     // Create actual TCP server
+ *     const tcpServer = net.createServer();
+ *
+ *     tcpServer.listen(addressInfo.port, addressInfo.address, () => {
+ *       const addr = tcpServer.address() as net.AddressInfo;
+ *       listenSocket.ack({
+ *         address: addr.address,
+ *         port: addr.port,
+ *         family: addr.family,
+ *         remoteAddress: '',
+ *         remotePort: 0
+ *       });
+ *     });
+ *
+ *     // Handle incoming TCP connections
+ *     tcpServer.on('connection', (tcpSocket) => {
+ *       // Create new browser socket for this TCP client
+ *       const browserSocket = listenSocket.connect(
+ *         tcpSocket.remoteAddress!,
+ *         tcpSocket.remotePort!
+ *       );
+ *
+ *       // Pipe data between TCP client and browser
+ *       tcpSocket.on('data', (data) => browserSocket.write(data));
+ *       browserSocket.readable.pipeTo(new WritableStream({
+ *         write(chunk) {
+ *           tcpSocket.write(Buffer.from(chunk));
+ *         }
+ *       }));
+ *
+ *       // Handle connection lifecycle
+ *       tcpSocket.on('end', () => browserSocket.end());
+ *       tcpSocket.on('error', (err) => browserSocket.destroy(err.message));
+ *     });
  *   });
  * });
+ *
+ * // Start the transport
+ * transport.start();
+ * console.log('Bridge server listening on port 8080');
  * ```
  */
 
@@ -44,93 +117,301 @@ import {
 } from "./protocol";
 
 /**
- * Event interface for Socket instances
+ * Events emitted by the Transport class
  */
-type SocketEvents = {
-  /** Emitted when data is received from the remote peer */
-  data: [Buffer];
-  /** Emitted when the connection is ended gracefully */
-  end: [];
-  /** Emitted when an error occurs */
-  error: [Error];
-};
-
-/**
- * Event interface for Connection instances
- */
-type ConnectionEvents = {
-  /** Emitted when browser requests to connect to a TCP server */
-  connect: [Socket, AddressInfo];
-  /** Emitted when browser requests to create a TCP server */
-  listen: [Socket, AddressInfo];
-};
-
-/**
- * Event interface for Transport instances
- */
-type TransportEventMap = {
+type TransportEvents = {
   /** Emitted when a new browser WebSocket connection is established */
   connection: [Connection];
 };
 
 /**
- * Main transport layer that manages WebSocket connections from browsers
+ * Events emitted by the Connection class
+ */
+type ConnectionEvents = {
+  /** Emitted when browser requests a TCP client connection */
+  connect: [Socket, AddressInfo];
+  /** Emitted when browser requests to create a TCP server */
+  listen: [ListenSocket, AddressInfo];
+};
+
+/**
+ * Events emitted by the ListenSocket class
+ */
+type ListenSocketEvents = {
+  /** Emitted when the listen socket is closed */
+  close: [];
+};
+
+/**
+ * Internal class for managing readable stream data flow from browser.
+ * @internal
+ */
+class ReadableStreamSource {
+  remoteWindowSize: number = 0;
+  private controller: ReadableStreamDefaultController<Buffer> | null = null;
+
+  constructor(
+    private ws: WebSocket,
+    private streamId: number,
+    private queueSize: number
+  ) {
+    this.remoteWindowSize = this.queueSize;
+  }
+
+  start(controller: ReadableStreamDefaultController<Buffer>): void {
+    this.controller = controller;
+  }
+
+  pull(controller: ReadableStreamDefaultController<Buffer>): void {
+    if (this.remoteWindowSize > this.queueSize / 2) return;
+    const delta = controller.desiredSize! - this.remoteWindowSize;
+    this.remoteWindowSize += delta;
+    // send WINDOW_UPDATE
+    const payload = Buffer.allocUnsafe(3);
+    payload[0] = (delta >> 16) & 0xff;
+    payload[1] = (delta >> 8) & 0xff;
+    payload[2] = delta & 0xff;
+    sendFrame(this.ws, FLAGS.WINDOW_UPDATE, this.streamId, payload);
+  }
+
+  cancel(): void {
+    this.controller = null;
+  }
+
+  onData(data: Buffer): void {
+    this.remoteWindowSize -= data.length;
+
+    try {
+      this.controller?.enqueue(data);
+    } catch (error) {
+      this.controller?.error(error);
+    }
+  }
+
+  onEnd(): void {
+    try {
+      this.controller?.close();
+    } catch (error) {
+      // Controller might already be closed
+    }
+    this.controller = null;
+  }
+
+  onError(err: Error): void {
+    try {
+      this.controller?.error(err);
+    } catch (e) {
+      // Controller might already be errored/closed
+    }
+    this.controller = null;
+  }
+}
+
+/**
+ * Internal class for managing writable stream data flow to browser.
+ * @internal
+ */
+class WritableStreamSink implements UnderlyingSink<Buffer> {
+  private controller: WritableStreamDefaultController | null = null;
+  private waitingForCapacity: ((value: void) => void) | null = null;
+
+  constructor(private socket: Socket, private availableWindowSize: number) {}
+
+  start(controller: WritableStreamDefaultController): void {
+    this.controller = controller;
+  }
+
+  async write(chunk: Buffer): Promise<void> {
+    if (this.socket.ended) {
+      throw new Error("Socket is closed");
+    }
+
+    // Wait for available window space if needed
+    while (this.availableWindowSize < chunk.length) {
+      if (this.socket.ended) {
+        throw new Error("Socket is closed");
+      }
+
+      // Wait for capacity to be added
+      await new Promise<void>((resolve) => {
+        this.waitingForCapacity = resolve;
+      });
+    }
+
+    // Send the data through the socket's write method
+    this.availableWindowSize -= chunk.length;
+    this.socket.write(chunk);
+  }
+
+  close(): void {
+    this.socket.end();
+    this.waitingForCapacity?.();
+    this.waitingForCapacity = null;
+  }
+
+  abort(reason?: any): void {
+    this.socket.destroy(String(reason?.message || reason));
+    this.waitingForCapacity?.();
+    this.waitingForCapacity = null;
+  }
+
+  addCapacity(windowSize: number): void {
+    this.availableWindowSize += windowSize;
+    this.waitingForCapacity?.();
+    this.waitingForCapacity = null;
+  }
+
+  onError(error: Error): void {
+    try {
+      this.controller?.error(error);
+    } catch (e) {
+      // Controller might already be errored/closed
+    }
+    this.controller = null;
+    this.waitingForCapacity?.();
+    this.waitingForCapacity = null;
+  }
+}
+
+/**
+ * WebSocket transport layer for browser TCP networking bridge.
  *
- * This class creates a bridge between browser WebSocket connections and
- * the Node.js TCP networking stack. It listens for new WebSocket connections
- * and creates Connection instances to handle the multiplexed TCP streams.
+ * The Transport class serves as the main entry point for the bridge server,
+ * managing WebSocket connections from browsers and creating Connection instances
+ * to handle multiplexed TCP streams. It coordinates between browser networking
+ * requests and the Node.js TCP stack.
  *
- * @example
+ * Each WebSocket connection from a browser gets its own Connection instance,
+ * which can handle multiple simultaneous TCP connections through stream multiplexing.
+ *
+ * @example Basic bridge server
  * ```javascript
  * import { WebSocketServer } from 'ws';
  * import { Transport } from '@gvibehacker/browser-socket-server';
+ * import net from 'net';
  *
- * // Create transport with existing WebSocket server
  * const wss = new WebSocketServer({ port: 8080 });
  * const transport = new Transport(wss);
  *
- * // Handle new browser connections
  * transport.on('connection', (connection) => {
- *   console.log('Browser connected');
+ *   console.log('New browser connected');
  *
- *   // Handle connection events
- *   connection.on('connect', (socket, addressInfo) => {
- *     // Browser wants to connect to a TCP server
- *     handleTcpConnect(socket, addressInfo);
+ *   connection.on('connect', (socket, addr) => {
+ *     // Browser wants to connect to external TCP server
+ *     const tcpSocket = net.connect(addr.port, addr.address);
+ *     tcpSocket.on('connect', () => {
+ *       socket.ack({
+ *         // connection details
+ *       });
+ *       // Set up data piping...
+ *     });
  *   });
  *
- *   connection.on('listen', (socket, addressInfo) => {
- *     // Browser wants to create a TCP server
- *     handleTcpListen(socket, addressInfo);
+ *   connection.on('listen', (listenSocket, addr) => {
+ *     // Browser wants to create TCP server
+ *     const server = net.createServer();
+ *     server.listen(addr.port, addr.address, () => {
+ *       listenSocket.ack({
+ *         // server details
+ *       });
+ *     });
  *   });
  * });
  *
- * // Start accepting connections
  * transport.start();
  * ```
+ *
+ * @example Advanced bridge with connection management
+ * ```javascript
+ * class BridgeServer {
+ *   constructor() {
+ *     this.activeConnections = new Set();
+ *     this.setupTransport();
+ *   }
+ *
+ *   setupTransport() {
+ *     const wss = new WebSocketServer({ port: 8080 });
+ *     const transport = new Transport(wss);
+ *
+ *     transport.on('connection', (connection) => {
+ *       this.activeConnections.add(connection);
+ *       console.log(`Browser connected. Total: ${this.activeConnections.size}`);
+ *
+ *       connection.ws.on('close', () => {
+ *         this.activeConnections.delete(connection);
+ *         console.log(`Browser disconnected. Remaining: ${this.activeConnections.size}`);
+ *       });
+ *
+ *       this.setupConnectionHandlers(connection);
+ *     });
+ *
+ *     transport.start();
+ *   }
+ *
+ *   setupConnectionHandlers(connection) {
+ *     // TCP client connection handling
+ *     connection.on('connect', this.handleTcpConnect.bind(this));
+ *     // TCP server creation handling
+ *     connection.on('listen', this.handleTcpListen.bind(this));
+ *   }
+ *
+ *   shutdown() {
+ *     for (const connection of this.activeConnections) {
+ *       connection.close();
+ *     }
+ *     this.activeConnections.clear();
+ *   }
+ * }
+ * ```
  */
-export class Transport extends EventEmitter<TransportEventMap> {
-  private wss: WebSocket.Server;
-
+export class Transport extends EventEmitter<TransportEvents> {
   /**
-   * Creates a new Transport instance
-   * @param wss - WebSocket server instance to listen on
-   */
-  constructor(wss: WebSocket.Server) {
-    super();
-    this.wss = wss;
-  }
-
-  /**
-   * Starts accepting WebSocket connections from browsers
+   * Creates a new Transport instance for managing browser connections.
    *
-   * This method begins listening for WebSocket connections and creates
-   * Connection instances for each new browser that connects.
+   * @param wss - WebSocket server instance that will receive browser connections
    *
    * @example
    * ```javascript
+   * import { WebSocketServer } from 'ws';
+   * import { Transport } from '@gvibehacker/browser-socket-server';
+   *
+   * const wss = new WebSocketServer({ port: 8080 });
+   * const transport = new Transport(wss);
+   * ```
+   */
+  constructor(private wss: WebSocket.Server) {
+    super();
+  }
+
+  /**
+   * Starts accepting WebSocket connections from browsers.
+   *
+   * This method begins listening for WebSocket connections on the provided
+   * WebSocket server and creates Connection instances for each new browser
+   * that connects. Each Connection will emit 'connection' events that should
+   * be handled to set up TCP networking logic.
+   *
+   * @example Basic startup
+   * ```javascript
    * transport.start();
-   * console.log('Transport started, ready for browser connections');
+   * console.log('Bridge server ready for browser connections');
+   * ```
+   *
+   * @example Startup with connection tracking
+   * ```javascript
+   * let connectionCount = 0;
+   *
+   * transport.on('connection', (connection) => {
+   *   connectionCount++;
+   *   console.log(`Browser #${connectionCount} connected`);
+   *
+   *   connection.ws.on('close', () => {
+   *     connectionCount--;
+   *     console.log(`Browser disconnected. Active: ${connectionCount}`);
+   *   });
+   * });
+   *
+   * transport.start();
    * ```
    */
   start(): void {
@@ -141,6 +422,10 @@ export class Transport extends EventEmitter<TransportEventMap> {
   }
 }
 
+/**
+ * Internal function to send binary protocol frames over WebSocket.
+ * @internal
+ */
 function sendFrame(
   ws: WebSocket,
   flag: Flag,
@@ -154,64 +439,157 @@ function sendFrame(
 }
 
 /**
- * Manages a single WebSocket connection from a browser
+ * Manages a single WebSocket connection from a browser with multiplexed TCP streams.
  *
- * This class handles the multiplexed TCP streams over a single WebSocket
- * connection. It processes binary frames from the browser, manages socket
- * instances for each stream, and coordinates between browser requests and
- * the Node.js TCP networking stack.
+ * The Connection class handles the binary protocol communication with a browser,
+ * managing multiple TCP connections that are multiplexed over a single WebSocket.
+ * It processes incoming frames, manages socket lifecycle, and coordinates between
+ * browser networking requests and Node.js TCP operations.
  *
- * @example
+ * Each Connection can handle multiple simultaneous TCP client connections and
+ * TCP server instances created by the browser, with proper stream isolation
+ * and flow control.
+ *
+ * @example TCP client proxy
  * ```javascript
- * // Connection is typically created by Transport
  * transport.on('connection', (connection) => {
  *   connection.on('connect', (socket, addressInfo) => {
- *     // Browser wants to connect to external TCP server
- *     const tcpSocket = net.connect(addressInfo.port, addressInfo.host);
+ *     console.log(`Proxying connection to ${addressInfo.address}:${addressInfo.port}`);
+ *
+ *     const tcpSocket = net.connect({
+ *       host: addressInfo.address,
+ *       port: addressInfo.port,
+ *       timeout: 5000
+ *     });
  *
  *     tcpSocket.on('connect', () => {
- *       socket.ack(Buffer.from(JSON.stringify({
- *         address: tcpSocket.localAddress,
- *         port: tcpSocket.localPort,
- *         family: tcpSocket.localFamily
- *       })));
+ *       console.log('TCP connection established');
+ *       socket.ack({
+ *         address: tcpSocket.localAddress!,
+ *         port: tcpSocket.localPort!,
+ *         family: tcpSocket.localFamily!,
+ *         remoteAddress: tcpSocket.remoteAddress!,
+ *         remotePort: tcpSocket.remotePort!
+ *       });
+ *
+ *       // Bidirectional data piping
+ *       tcpSocket.on('data', (data) => socket.write(data));
+ *       socket.readable.pipeTo(new WritableStream({
+ *         write(chunk) {
+ *           tcpSocket.write(Buffer.from(chunk));
+ *         },
+ *         close() {
+ *           tcpSocket.end();
+ *         }
+ *       }));
  *     });
  *
- *     // Pipe data between browser socket and TCP socket
- *     tcpSocket.on('data', (data) => socket.write(data));
- *     socket.on('data', (data) => tcpSocket.write(data));
+ *     tcpSocket.on('error', (err) => {
+ *       console.error('TCP connection error:', err.message);
+ *       socket.destroy(err.message);
+ *     });
+ *
+ *     tcpSocket.on('timeout', () => {
+ *       console.log('TCP connection timeout');
+ *       socket.destroy('Connection timeout');
+ *     });
+ *   });
+ * });
+ * ```
+ *
+ * @example TCP server proxy with connection management
+ * ```javascript
+ * const activeServers = new Map();
+ *
+ * transport.on('connection', (connection) => {
+ *   connection.on('listen', (listenSocket, addressInfo) => {
+ *     console.log(`Creating server on ${addressInfo.address}:${addressInfo.port}`);
+ *
+ *     const tcpServer = net.createServer((tcpSocket) => {
+ *       console.log(`TCP client connected from ${tcpSocket.remoteAddress}:${tcpSocket.remotePort}`);
+ *
+ *       // Create browser socket for this TCP client
+ *       const browserSocket = listenSocket.connect(
+ *         tcpSocket.remoteAddress!,
+ *         tcpSocket.remotePort!,
+ *         () => console.log('Browser socket established')
+ *       );
+ *
+ *       // Handle data flow
+ *       tcpSocket.on('data', (data) => {
+ *         console.log(`TCP->Browser: ${data.length} bytes`);
+ *         browserSocket.write(data);
+ *       });
+ *
+ *       browserSocket.readable.pipeTo(new WritableStream({
+ *         write(chunk) {
+ *           console.log(`Browser->TCP: ${chunk.length} bytes`);
+ *           tcpSocket.write(Buffer.from(chunk));
+ *         }
+ *       }));
+ *
+ *       // Connection lifecycle
+ *       tcpSocket.on('end', () => {
+ *         console.log('TCP client disconnected');
+ *         browserSocket.end();
+ *       });
+ *
+ *       tcpSocket.on('error', (err) => {
+ *         console.error('TCP client error:', err.message);
+ *         browserSocket.destroy(err.message);
+ *       });
+ *     });
+ *
+ *     tcpServer.listen(addressInfo.port, addressInfo.address, () => {
+ *       const addr = tcpServer.address() as net.AddressInfo;
+ *       console.log(`TCP server listening on ${addr.address}:${addr.port}`);
+ *
+ *       activeServers.set(listenSocket, tcpServer);
+ *       listenSocket.ack({
+ *         address: addr.address,
+ *         port: addr.port,
+ *         family: addr.family,
+ *         remoteAddress: '',
+ *         remotePort: 0
+ *       });
+ *     });
+ *
+ *     tcpServer.on('error', (err) => {
+ *       console.error('TCP server error:', err.message);
+ *       listenSocket.close();
+ *     });
  *   });
  *
- *   connection.on('listen', (socket, addressInfo) => {
- *     // Browser wants to create TCP server
- *     const server = net.createServer();
- *     server.listen(addressInfo.port, addressInfo.host);
- *
- *     server.on('listening', () => {
- *       socket.ack(Buffer.from(JSON.stringify(server.address())));
- *     });
- *
- *     server.on('connection', (tcpSocket) => {
- *       const newSocket = socket.connect(
- *         tcpSocket.remoteAddress,
- *         tcpSocket.remotePort
- *       );
- *       // Handle the new connection...
- *     });
+ *   // Cleanup on connection close
+ *   connection.ws.on('close', () => {
+ *     for (const [listenSocket, tcpServer] of activeServers) {
+ *       if (connection.sockets.has(listenSocket.streamId)) {
+ *         tcpServer.close();
+ *         activeServers.delete(listenSocket);
+ *       }
+ *     }
  *   });
  * });
  * ```
  */
 export class Connection extends EventEmitter<ConnectionEvents> {
-  public sockets: Map<number, Socket> = new Map();
+  /** Map of active sockets indexed by stream ID */
+  public readonly sockets: Map<number, Socket> = new Map();
+  /** Frame parser for processing incoming WebSocket binary data */
   private frameParser: FrameParser = new FrameParser();
+  /** Whether this connection has been closed */
   private closed: boolean = false;
-  ws: WebSocket;
-  nextStreamId: number = 2; // Server uses even IDs (2, 4, 6...) for incoming connections
+  /** The underlying WebSocket connection to the browser */
+  public readonly ws: WebSocket;
+  /** Next available stream ID for server-initiated connections (even numbers) */
+  public nextStreamId: number = 2; // Server uses even IDs (2, 4, 6...) for incoming connections
 
   /**
-   * Creates a new Connection instance for a WebSocket
-   * @param ws - WebSocket connection to the browser
+   * Creates a new Connection instance for managing a browser WebSocket.
+   *
+   * @param ws - WebSocket connection from the browser client
+   *
+   * @internal This constructor is typically not called directly. Use Transport.start() instead.
    */
   constructor(ws: WebSocket) {
     super();
@@ -230,68 +608,148 @@ export class Connection extends EventEmitter<ConnectionEvents> {
       switch (flag) {
         case FLAGS.SYN:
           try {
-            const addressInfo = parseSynPayload(payload);
-            // Client-initiated SYN (outbound connection request)
-            const socket = new Socket(this, streamId);
+            const [windowSize, addressInfo] = parseSynPayload(payload, true);
+            const socket = new Socket(this, streamId, 65536, windowSize);
             this.sockets.set(streamId, socket);
             this.emit("connect", socket, addressInfo);
           } catch (error) {
-            const errorMessage =
-              error instanceof Error ? error.message : String(error);
-            sendFrame(this.ws, FLAGS.RST, streamId, Buffer.from(errorMessage));
+            this.sockets.delete(streamId);
+            sendFrame(
+              this.ws,
+              FLAGS.RST,
+              streamId,
+              Buffer.from(
+                error instanceof Error ? error.message : String(error)
+              )
+            );
           }
           break;
         case FLAGS.LISTEN:
           try {
-            const addressInfo = parseSynPayload(payload);
-            const socket = new Socket(this, streamId);
-            this.sockets.set(streamId, socket);
+            const [, addressInfo] = parseSynPayload(payload, false);
+            const socket = new ListenSocket(this, streamId);
+            this.sockets.set(streamId, socket as unknown as Socket);
             this.emit("listen", socket, addressInfo);
           } catch (error) {
-            const errorMessage =
-              error instanceof Error ? error.message : String(error);
-            sendFrame(this.ws, FLAGS.RST, streamId, Buffer.from(errorMessage));
+            this.sockets.delete(streamId);
+            sendFrame(
+              this.ws,
+              FLAGS.RST,
+              streamId,
+              Buffer.from(
+                error instanceof Error ? error.message : String(error)
+              )
+            );
+          }
+          break;
+        case FLAGS.ACK:
+          socket = this.sockets.get(streamId);
+          if (!socket) {
+            sendFrame(
+              this.ws,
+              FLAGS.RST,
+              streamId,
+              Buffer.from("Invalid stream id")
+            );
+            break;
+          }
+          try {
+            socket.incrementWriteWindow(
+              (payload[0] << 16) | (payload[1] << 8) | payload[2]
+            );
+            socket.connectCallback?.(socket);
+            socket.connectCallback = undefined;
+          } catch (error) {
+            this.sockets.delete(streamId);
+            const err = error instanceof Error ? error.message : String(error);
+            sendFrame(this.ws, FLAGS.RST, streamId, Buffer.from(err));
+            socket.onError(err);
           }
           break;
         case FLAGS.DATA:
           socket = this.sockets.get(streamId);
-          if (socket) socket.emit("data", data);
-          else
+          if (!socket) {
             sendFrame(
               this.ws,
               FLAGS.RST,
               streamId,
               Buffer.from("Invalid stream id")
             );
+            break;
+          }
+          if (socket.remoteEnded) {
+            this.sockets.delete(streamId);
+            const err = "Data after end";
+            sendFrame(this.ws, FLAGS.RST, streamId, Buffer.from(err));
+            socket.onError(err);
+            break;
+          }
+
+          if (socket.readableSource.remoteWindowSize < payload.length) {
+            this.sockets.delete(streamId);
+            const err = "Data exceeding allowed window size";
+            sendFrame(this.ws, FLAGS.RST, streamId, Buffer.from(err));
+            socket.onError(err);
+            break;
+          }
+          socket.readableSource.onData(payload);
           break;
         case FLAGS.FIN:
           socket = this.sockets.get(streamId);
-          if (socket) {
-            if (socket.remoteEnded) return;
-            socket.remoteEnded = true;
-            if (socket.ended) {
-              this.sockets.delete(streamId);
-            }
-            socket.emit("end");
-          } else
+          if (!socket) {
             sendFrame(
               this.ws,
               FLAGS.RST,
               streamId,
               Buffer.from("Invalid stream id")
             );
+            break;
+          }
+          if (socket.remoteEnded) break;
+          socket.remoteEnded = true;
+          if (socket.ended) {
+            this.sockets.delete(streamId);
+          }
+          socket.readableSource.onEnd();
           break;
         case FLAGS.RST:
           socket = this.sockets.get(streamId);
-          if (!socket) return;
-          if (socket.ended && socket.remoteEnded) return;
-          const error = new Error(
+          if (!socket) break;
+          if (socket instanceof ListenSocket) {
+            (socket as ListenSocket).emit("close");
+            this.sockets.delete(streamId);
+            break;
+          }
+
+          if (socket.ended && socket.remoteEnded) break;
+          const err =
             payload && payload.length > 0
               ? payload.toString()
-              : "Connection reset"
-          );
-          socket.emit("error", error);
+              : "Connection reset";
+          socket.onError(err);
           this.sockets.delete(streamId);
+          break;
+        case FLAGS.WINDOW_UPDATE:
+          socket = this.sockets.get(streamId);
+          if (!socket) {
+            sendFrame(
+              this.ws,
+              FLAGS.RST,
+              streamId,
+              Buffer.from("Invalid stream id")
+            );
+            break;
+          }
+          try {
+            socket.incrementWriteWindow(
+              (payload[0] << 16) | (payload[1] << 8) | payload[2]
+            );
+          } catch (error) {
+            this.sockets.delete(streamId);
+            const err = error instanceof Error ? error.message : String(error);
+            sendFrame(this.ws, FLAGS.RST, streamId, Buffer.from(err));
+            socket.onError(err);
+          }
           break;
       }
     }
@@ -302,16 +760,28 @@ export class Connection extends EventEmitter<ConnectionEvents> {
     this.closed = true;
     for (const socket of this.sockets.values()) {
       if (socket.ended && socket.remoteEnded) continue;
-      socket.emit("error", new Error("Websocket closed"));
+      socket.onError("Websocket closed");
     }
     this.sockets.clear();
   }
 
   /**
-   * Closes the WebSocket connection and all associated sockets
-   * @example
+   * Gracefully closes the WebSocket connection and all associated sockets.
+   *
+   * This method properly cleans up all active TCP connections managed by
+   * this browser connection, ensuring no resources are leaked when the
+   * browser disconnects or the server shuts down.
+   *
+   * @example Basic connection close
    * ```javascript
    * connection.close();
+   * ```
+   *
+   * @example Cleanup with logging
+   * ```javascript
+   * console.log(`Closing connection with ${connection.sockets.size} active sockets`);
+   * connection.close();
+   * console.log('Connection closed and resources cleaned up');
    * ```
    */
   close(): void {
@@ -325,72 +795,155 @@ export class Connection extends EventEmitter<ConnectionEvents> {
 }
 
 /**
- * Represents a multiplexed socket connection within a WebSocket
+ * Represents a multiplexed TCP socket connection over WebSocket transport.
  *
- * This class provides a Node.js socket-like interface for individual TCP
- * streams multiplexed over the WebSocket connection. It handles sending
- * and receiving data, connection lifecycle, and coordinating with the
- * browser-side socket implementation.
+ * The Socket class provides a Node.js-compatible interface for individual TCP
+ * streams that are multiplexed over the WebSocket connection to the browser.
+ * It supports both client-initiated connections (browser connects to TCP server)
+ * and server-initiated connections (TCP client connects to browser's server).
  *
- * @example
+ * Each socket maintains its own flow control, handles data buffering, and
+ * provides streaming APIs for efficient data transfer between browser and
+ * Node.js TCP endpoints.
+ *
+ * @example HTTP proxy through browser connection
  * ```javascript
- * // Socket is typically created by Connection
  * connection.on('connect', (socket, addressInfo) => {
- *   // Acknowledge the connection
- *   socket.ack(Buffer.from(JSON.stringify({
- *     address: '127.0.0.1',
- *     port: 3000,
- *     family: 'IPv4'
- *   })));
+ *   console.log(`Browser connecting to ${addressInfo.address}:${addressInfo.port}`);
  *
- *   // Send data to browser
- *   socket.write('Hello from server');
+ *   // Connect to actual HTTP server
+ *   const httpSocket = net.connect(addressInfo.port, addressInfo.address);
  *
- *   // Handle data from browser
- *   socket.on('data', (data) => {
- *     console.log('Received:', data.toString());
+ *   httpSocket.on('connect', () => {
+ *     // Acknowledge connection to browser
+ *     socket.ack({
+ *       address: httpSocket.localAddress!,
+ *       port: httpSocket.localPort!,
+ *       family: httpSocket.localFamily!,
+ *       remoteAddress: httpSocket.remoteAddress!,
+ *       remotePort: httpSocket.remotePort!
+ *     });
+ *
+ *     // Set up bidirectional streaming
+ *     const writer = socket.writable.getWriter();
+ *     httpSocket.on('data', async (data) => {
+ *       try {
+ *         await writer.write(data);
+ *       } catch (err) {
+ *         console.error('Error writing to browser:', err);
+ *         httpSocket.destroy();
+ *       }
+ *     });
+ *
+ *     socket.readable.pipeTo(new WritableStream({
+ *       write(chunk) {
+ *         httpSocket.write(Buffer.from(chunk));
+ *       },
+ *       close() {
+ *         httpSocket.end();
+ *       },
+ *       abort(reason) {
+ *         httpSocket.destroy(reason);
+ *       }
+ *     }));
  *   });
  *
- *   // Handle connection end
- *   socket.on('end', () => {
- *     console.log('Browser closed connection');
+ *   httpSocket.on('error', (err) => {
+ *     socket.destroy(`HTTP connection failed: ${err.message}`);
  *   });
  * });
+ * ```
  *
- * // For server sockets accepting connections
- * connection.on('listen', (socket, addressInfo) => {
- *   // When TCP client connects to our server
- *   tcpServer.on('connection', (tcpSocket) => {
- *     // Create new browser socket for this connection
- *     const browserSocket = socket.connect(
- *       tcpSocket.remoteAddress,
- *       tcpSocket.remotePort
- *     );
+ * @example WebSocket-to-TCP bridge with protocol detection
+ * ```javascript
+ * connection.on('connect', (socket, addressInfo) => {
+ *   const tcpSocket = net.connect(addressInfo.port, addressInfo.address);
+ *   let protocolDetected = false;
  *
- *     // Pipe data between TCP socket and browser
- *     tcpSocket.pipe(browserSocket);
- *     browserSocket.on('data', (data) => tcpSocket.write(data));
+ *   tcpSocket.on('connect', () => {
+ *     socket.ack({
+ *       // connection info
+ *     });
+ *
+ *     // First, try to detect the protocol
+ *     socket.readable.getReader().read().then(({ value }) => {
+ *       const firstData = Buffer.from(value!);
+ *
+ *       if (firstData.toString().startsWith('GET ')) {
+ *         console.log('HTTP protocol detected');
+ *       } else if (firstData[0] === 0x16) {
+ *         console.log('TLS protocol detected');
+ *       } else {
+ *         console.log('Unknown protocol, treating as raw TCP');
+ *       }
+ *
+ *       // Forward the first data
+ *       tcpSocket.write(firstData);
+ *       protocolDetected = true;
+ *
+ *       // Continue with normal data flow
+ *       socket.readable.pipeTo(new WritableStream({
+ *         write(chunk) {
+ *           tcpSocket.write(Buffer.from(chunk));
+ *         }
+ *       }));
+ *     });
  *   });
  * });
  * ```
  */
-export class Socket extends EventEmitter<SocketEvents> {
-  private connection: Connection;
-  private streamId: number;
-  ended: boolean = false;
-  remoteEnded: boolean = false;
-  remoteAddress: string | null = null;
-  remotePort: number | null = null;
+export class Socket {
+  private writableSink: WritableStreamSink;
+
+  /** Initial window size for flow control */
+  public readonly initialWindowSize: number;
+  /** ReadableStream for receiving data from the browser */
+  public readonly readable: ReadableStream<Buffer>;
+  /** Internal readable stream source controller */
+  public readonly readableSource: ReadableStreamSource;
+  /** WritableStream for sending data to the browser */
+  public readonly writable: WritableStream<Buffer>;
+  /** Internal callback for connection acknowledgment */
+  connectCallback?: (s: Socket) => void;
+  /** Whether the local side has ended the connection */
+  public ended: boolean = false;
+  /** Whether the remote side (browser) has ended the connection */
+  public remoteEnded: boolean = false;
+  /** Remote peer's IP address (for server-initiated connections) */
+  public remoteAddress: string | null = null;
+  /** Remote peer's port number (for server-initiated connections) */
+  public remotePort: number | null = null;
 
   /**
-   * Creates a new Socket instance
-   * @param connection - Parent Connection instance
-   * @param streamId - Unique stream identifier for this socket
+   * Creates a new Socket instance for TCP communication over WebSocket.
+   *
+   * @param connection - Parent Connection that manages this socket
+   * @param streamId - Unique stream identifier for protocol multiplexing
+   * @param initialWindowSize - Initial receive window size for flow control (default: 65536 bytes)
+   * @param availableWriteWindowSize - Initial send window size from browser (default: 0)
+   *
+   * @internal This constructor is typically not called directly. Sockets are created by Connection.
    */
-  constructor(connection: Connection, streamId: number) {
-    super();
-    this.connection = connection;
-    this.streamId = streamId;
+  constructor(
+    private connection: Connection,
+    private streamId: number,
+    initialWindowSize: number = 65536,
+    availableWriteWindowSize: number = 0
+  ) {
+    this.initialWindowSize = initialWindowSize;
+    this.readableSource = new ReadableStreamSource(
+      this.connection.ws,
+      this.streamId,
+      initialWindowSize
+    );
+    this.readable = new ReadableStream(this.readableSource, {
+      highWaterMark: initialWindowSize,
+      size: (chunk) => chunk.length,
+    });
+    this.writableSink = new WritableStreamSink(this, availableWriteWindowSize);
+    this.writable = new WritableStream(this.writableSink, {
+      highWaterMark: 0,
+    });
   }
 
   /**
@@ -419,9 +972,19 @@ export class Socket extends EventEmitter<SocketEvents> {
     remotePort: number;
   }): void {
     if (this.ended || this.remoteEnded) return;
-    const payload = addressInfo
+    const addressPayload = addressInfo
       ? Buffer.from(JSON.stringify(addressInfo))
       : Buffer.alloc(0);
+
+    const payload = Buffer.allocUnsafe(3 + addressPayload.length);
+
+    // 3 bytes for listen stream ID
+    payload[0] = (this.initialWindowSize >> 16) & 0xff;
+    payload[1] = (this.initialWindowSize >> 8) & 0xff;
+    payload[2] = this.initialWindowSize & 0xff;
+    // Variable length host
+    addressPayload.copy(payload, 3);
+
     sendFrame(this.connection.ws, FLAGS.ACK, this.streamId, payload);
   }
 
@@ -470,9 +1033,6 @@ export class Socket extends EventEmitter<SocketEvents> {
    * @param error - Optional error information (Error object, Buffer, or string)
    * @example
    * ```javascript
-   * // Destroy with error
-   * socket.destroy(new Error('Connection timeout'));
-   *
    * // Destroy with custom message
    * socket.destroy('Invalid request format');
    *
@@ -480,7 +1040,7 @@ export class Socket extends EventEmitter<SocketEvents> {
    * socket.destroy();
    * ```
    */
-  destroy(error?: Error | Buffer | string): void {
+  destroy(error?: Buffer | string): void {
     if (this.ended && this.remoteEnded) return;
     this.ended = true;
     this.remoteEnded = true;
@@ -497,6 +1057,78 @@ export class Socket extends EventEmitter<SocketEvents> {
       errorPayload = Buffer.alloc(0);
     }
     sendFrame(this.connection.ws, FLAGS.RST, this.streamId, errorPayload);
+  }
+
+  /**
+   * Internal method to handle socket errors.
+   * @internal
+   */
+  onError(error: string): void {
+    const err = new Error(error);
+    this.readableSource.onError(err);
+    this.writableSink.onError(err);
+  }
+
+  /**
+   * Internal method to update the write window size for flow control.
+   * @internal
+   */
+  incrementWriteWindow(windowSize: number) {
+    this.writableSink.addCapacity(windowSize);
+  }
+}
+
+/**
+ * Represents a TCP server listening socket managed by the browser.
+ *
+ * ListenSocket handles server-side socket operations when a browser creates
+ * a TCP server. It manages incoming TCP client connections and creates new
+ * Socket instances for each client that connects to the browser's server.
+ *
+ * @example Basic server socket management
+ * ```javascript
+ * connection.on('listen', (listenSocket, addressInfo) => {
+ *   console.log(`Browser creating server on ${addressInfo.address}:${addressInfo.port}`);
+ *   
+ *   const tcpServer = net.createServer();
+ *   
+ *   tcpServer.listen(addressInfo.port, addressInfo.address, () => {
+ *     const serverAddr = tcpServer.address() as net.AddressInfo;
+ *     listenSocket.ack({
+ *       address: serverAddr.address,
+ *       port: serverAddr.port,
+ *       family: serverAddr.family,
+ *       remoteAddress: '',
+ *       remotePort: 0
+ *     });
+ *   });
+ *   
+ *   tcpServer.on('connection', (tcpSocket) => {
+ *     // Create browser socket for this TCP client
+ *     const browserSocket = listenSocket.connect(
+ *       tcpSocket.remoteAddress!,
+ *       tcpSocket.remotePort!
+ *     );
+ *     
+ *     // Handle connection...
+ *   });
+ * });
+ * ```
+ */
+export class ListenSocket extends EventEmitter<ListenSocketEvents> {
+  /** Internal callback for connection acknowledgment */
+  connectCallback?: (s: Socket) => void;
+
+  /**
+   * Creates a new ListenSocket instance.
+   *
+   * @param connection - Parent Connection managing this listen socket
+   * @param streamId - Unique stream identifier for this listen socket
+   *
+   * @internal This constructor is typically not called directly. ListenSockets are created by Connection.
+   */
+  constructor(private connection: Connection, private streamId: number) {
+    super();
   }
 
   /**
@@ -528,41 +1160,101 @@ export class Socket extends EventEmitter<SocketEvents> {
    * });
    * ```
    */
-  connect(remoteAddress: string, remotePort: number): Socket {
+  connect(
+    remoteAddress: string,
+    remotePort: number,
+    callback?: () => void
+  ): Socket {
     // For server-initiated connections from a listening socket
     const newStreamId = this.connection.nextStreamId;
     this.connection.nextStreamId += 2; // Skip by 2 to maintain even numbers
     const newSocket = new Socket(this.connection, newStreamId);
     newSocket.remoteAddress = remoteAddress;
     newSocket.remotePort = remotePort;
+    newSocket.connectCallback = callback;
     this.connection.sockets.set(newStreamId, newSocket);
 
     const payload = this.createServerSynPayload(
       this.streamId, // This is the listen stream ID
       remoteAddress,
-      remotePort
+      remotePort,
+      newSocket.initialWindowSize
     );
     sendFrame(this.connection.ws, FLAGS.SYN, newStreamId, payload);
 
     return newSocket;
   }
 
+  /**
+   * Sends an acknowledgment frame to the browser
+   * @param addressInfo - Optional address information
+   * @example
+   * ```javascript
+   * // Send ACK with address info for connection
+   * socket.ack({
+   *   address: 'example.com',
+   *   port: 443,
+   *   family: 'IPv4',
+   *   remoteAddress: '1.2.3.4',
+   *   remotePort: 54321
+   * });
+   *
+   * // Send simple ACK
+   * socket.ack();
+   * ```
+   */
+  ack(addressInfo?: {
+    address: string;
+    port: number;
+    family: string;
+    remoteAddress: string;
+    remotePort: number;
+  }): void {
+    const payload = addressInfo
+      ? Buffer.from(JSON.stringify(addressInfo))
+      : Buffer.alloc(0);
+    sendFrame(this.connection.ws, FLAGS.ACK, this.streamId, payload);
+  }
+
+  /**
+   * Close the socket connection
+   * @example
+   * ```javascript
+   * socket.close();
+   * ```
+   */
+  close(): void {
+    if (!this.connection.sockets.delete(this.streamId)) return;
+    sendFrame(this.connection.ws, FLAGS.RST, this.streamId, Buffer.alloc(0));
+  }
+
+  /**
+   * Internal method to create SYN payload for server-initiated connections.
+   * @internal
+   */
   private createServerSynPayload(
     listenStreamId: number,
     remoteAddress: string,
-    remotePort: number
+    remotePort: number,
+    windowSize: number
   ): Buffer {
     const hostBuffer = Buffer.from(remoteAddress);
-    const payload = Buffer.allocUnsafe(3 + 2 + hostBuffer.length);
+    const payload = Buffer.allocUnsafe(3 + 3 + 2 + hostBuffer.length);
 
     // 3 bytes for listen stream ID
     payload[0] = (listenStreamId >> 16) & 0xff;
     payload[1] = (listenStreamId >> 8) & 0xff;
     payload[2] = listenStreamId & 0xff;
+
+    // 3 bytes for window size
+    payload[3] = (windowSize >> 16) & 0xff;
+    payload[4] = (windowSize >> 8) & 0xff;
+    payload[5] = windowSize & 0xff;
+
     // 2 bytes for port (uint16)
-    payload.writeUInt16BE(remotePort, 3);
+    payload.writeUInt16BE(remotePort, 6);
     // Variable length host
-    hostBuffer.copy(payload, 5);
+    hostBuffer.copy(payload, 8);
 
     return payload;
   }

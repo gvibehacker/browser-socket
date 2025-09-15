@@ -20,6 +20,12 @@ browser-socket is a WebSocket-based transport layer that allows browsers to comm
 - **Development**: `npm run dev` - Builds and watches for changes
 - **Install deps**: `npm install`
 
+### Cloudflare Worker (`/cf-worker`)
+
+- **Build**: `npm run build` - Builds the TypeScript Cloudflare Worker library with Rollup
+- **Development**: `npm run dev` - Builds and watches for changes
+- **Install deps**: `npm install`
+
 ### Runtime
 
 - **Default WebSocket port**: 8080
@@ -39,20 +45,22 @@ browser-socket is a WebSocket-based transport layer that allows browsers to comm
 
 **Cloudflare Worker (`/cf-worker/src`)**:
 
-- Cloudflare Worker implementation for WebSocket transport
+- `index.ts` - Cloudflare Workers WebSocket bridge with TCP connection handling using connect() API
+- `protocol.ts` - binary wire protocol implementation
 
 ### Wire Protocol
 
 Binary protocol with 8-byte header + payload:
 
 - Length (24 bits) + Flag (8 bits) + Stream ID (32 bits)
-- Flags: DATA(0), SYN(1), ACK(2), FIN(4), RST(8), LISTEN(16)
+- Flags: DATA(0), SYN(1), ACK(2), FIN(4), RST(8), LISTEN(16), WINDOW_UPDATE(32)
 - Stream IDs: Client uses odd numbers (1,3,5...), server uses even numbers (2,4,6...) - incremental and not reusable
-- SYN from browser will have payload in the format of :1111, [::1]:1111, 0.0.0.0:1111, unix://my.sock
-- ACK to SYN from server contains JSON payload with socket.address() (address, port, family) plus remoteAddress and remotePort
-- LISTEN from browser will have payload in the format of [::1]:1111, 0.0.0.0:1111, unix://my.sock
-- ACK to LISTEN from server contains server address info (JSON of Node.js server.address()) as payload
-- SYN from server will have payload of: 3 bytes stream id (stream id used in LISTEN) + 2 bytes port (uint16) + variable length host string
+- SYN from browser will have payload of: 3 bytes initial window size + address format (:1111, [::1]:1111, 0.0.0.0:1111, unix:my.sock)
+- ACK to SYN from server contains 3 bytes window size + JSON payload with socket.address() (address, port, family) plus remoteAddress and remotePort
+- LISTEN from browser will have payload in the format of [::1]:1111, 0.0.0.0:1111, unix:my.sock
+- ACK to LISTEN from server contains 3 bytes window size + server address info (JSON of Node.js server.address()) as payload
+- SYN from server will have payload of: 3 bytes window size + 3 bytes stream id (stream id used in LISTEN) + 2 bytes port (uint16) + variable length host string
+- WINDOW_UPDATE frame contains 3 bytes window size as payload
 - FIN/RST can have optional data payload
 
 #### Protocol Design Principles
@@ -63,20 +71,62 @@ Binary protocol with 8-byte header + payload:
 
 ### Key Classes
 
+**Server Side:**
+
 - `Transport` - Server-side WebSocket handler
-- `ConnectionHandler` - Manages multiplexed TCP connections per WebSocket
-- `Net` - Client-side main class providing `net.createServer()` and `net.Socket()` API
-- `FrameParser` - Handles binary frame parsing for both client and server
+- `Connection` - Manages multiplexed TCP connections per WebSocket
+- `Socket` - Individual TCP stream within a WebSocket connection
+- `ListenSocket` - TCP server socket for accepting incoming connections
+
+**Client Side:**
+
+- `Net` - Main class providing `net.createServer()` and `net.Socket()` API
+- `Socket` - Browser-side TCP socket implementation
+- `NetListener` - TCP server for accepting connections
+
+**Cloudflare Worker:**
+
+- `Connection` - WebSocket connection handler with CF Workers integration
+- `Socket` - WebSocket stream with ReadableStream/WritableStream API
+
+**Shared:**
+
+- `FrameParser` - Handles binary frame parsing for all implementations
 
 ### Connection Flow
+
+**Node.js Server Bridge:**
 
 1. Browser connects WebSocket to Node.js server
 2. Browser can call `net.createServer()` to listen on Node.js ports
 3. Browser can call `new net.Socket().connect()` to connect to external TCP servers
 4. All TCP data flows through WebSocket as binary frames with stream multiplexing
 
+**Cloudflare Worker Bridge:**
+
+1. Browser connects WebSocket to Cloudflare Worker endpoint
+2. Browser can call `new net.Socket().connect()` to connect to external TCP servers
+3. Worker uses `connect()` API to establish TCP connections to external services
+4. All TCP data flows through WebSocket with ReadableStream/WritableStream piping
+
 ## Development Constraints
 
-- No third-party libraries allowed (only built-in Node.js `ws` module)
+**General:**
+
 - Write modular, concise code prioritizing readability over perfection
-- Both client and server implement identical binary protocol
+- All implementations use identical binary protocol for compatibility
+
+**Node.js Server:**
+
+- No third-party libraries allowed (only built-in Node.js `ws` module)
+- Use native Node.js networking APIs (`net` module)
+
+**Browser Client:**
+
+- Vanilla JavaScript/TypeScript only
+- Use Web APIs (WebSocket, ReadableStream, WritableStream)
+
+**Cloudflare Worker:**
+
+- Use Cloudflare Workers APIs (`connect()`, WebSocket, Streams)
+- Leverage Web Standards (ReadableStream, WritableStream, WebSocketPair)

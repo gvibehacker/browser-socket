@@ -1,23 +1,23 @@
 /**
  * @fileoverview Wire Protocol Implementation
- * 
+ *
  * This module implements the binary wire protocol used for communication
  * between browser clients and the Node.js server. The protocol uses an
  * 8-byte header followed by variable-length payload data.
- * 
+ *
  * Binary format: 8-byte header + payload
  * Header structure:
  * - Length: 24 bits (3 bytes) - payload size
- * - Flag: 8 bits (1 byte) - frame type  
+ * - Flag: 8 bits (1 byte) - frame type
  * - Stream ID: 32 bits (4 bytes) - unique stream identifier
- * 
+ *
  * @example
  * ```javascript
  * import { encodeFrame, FLAGS, FrameParser } from './protocol';
- * 
+ *
  * // Encode a SYN frame
  * const synFrame = encodeFrame(FLAGS.SYN, 1, Buffer.from('localhost:3000'));
- * 
+ *
  * // Parse incoming frames
  * const parser = new FrameParser();
  * const frames = parser.addData(incomingData);
@@ -42,12 +42,14 @@ export const FLAGS = {
   RST: 8, // 0x08
   /** Open a socket for listening */
   LISTEN: 16, // 0x10
+  /** Window size update */
+  WINDOW_UPDATE: 32, // 0x20
 } as const;
 
 /**
  * Union type representing valid protocol flags
  */
-export type Flag = typeof FLAGS[keyof typeof FLAGS];
+export type Flag = (typeof FLAGS)[keyof typeof FLAGS];
 
 /**
  * Size of the binary frame header in bytes
@@ -86,7 +88,7 @@ export interface Frame {
  */
 export interface AddressInfo {
   /** Connection type - TCP or Unix socket */
-  type: 'tcp' | 'unix';
+  type: "tcp" | "unix";
   /** Hostname, IP address, or Unix socket path */
   host: string;
   /** Port number (required for TCP connections) */
@@ -104,17 +106,21 @@ export interface AddressInfo {
  * ```javascript
  * // Encode a SYN frame
  * const synFrame = encodeFrame(FLAGS.SYN, 1, 'localhost:3000');
- * 
+ *
  * // Encode a data frame
  * const dataFrame = encodeFrame(FLAGS.DATA, 5, Buffer.from('Hello'));
- * 
+ *
  * // Encode an ACK frame with JSON payload
  * const ackFrame = encodeFrame(FLAGS.ACK, 3, JSON.stringify({address: '127.0.0.1', port: 8080}));
  * ```
  */
-export function encodeFrame(flag: Flag, streamId: number, payload: Buffer | string = Buffer.alloc(0)): Buffer {
+export function encodeFrame(
+  flag: Flag,
+  streamId: number,
+  payload: Buffer | string = Buffer.alloc(0)
+): Buffer {
   let payloadBuffer: Buffer;
-  
+
   if (typeof payload === "string") {
     payloadBuffer = Buffer.from(payload, "utf8");
   } else {
@@ -179,19 +185,19 @@ export function decodeFrameHeader(buffer: Buffer): FrameHeader | null {
 
 /**
  * Parser for handling streaming binary frame data
- * 
+ *
  * This class accumulates incoming binary data and parses complete frames
  * as they become available. It handles partial frames and frame boundaries
  * automatically.
- * 
+ *
  * @example
  * ```javascript
  * const parser = new FrameParser();
- * 
+ *
  * // Process incoming data chunks
  * const frames1 = parser.addData(chunk1);
  * const frames2 = parser.addData(chunk2);
- * 
+ *
  * // Handle complete frames
  * frames1.forEach(frame => {
  *   console.log(`Received frame: ${frame.flag}, stream ${frame.streamId}`);
@@ -241,65 +247,87 @@ export class FrameParser {
 }
 
 /**
- * Parses SYN or LISTEN frame payload to extract address information
- * @param payload - Buffer containing address string
- * @returns Parsed AddressInfo object
+ * Parses SYN or LISTEN frame payload to extract window size and address information
+ * @param payload - Buffer containing 3-byte window size + address string
+ * @returns Tuple of [windowSize, AddressInfo]
  * @throws {Error} When payload format is invalid
  * @example
  * ```javascript
+ * // Parse SYN payload with window size
+ * const payload = Buffer.concat([Buffer.from([0x00, 0x10, 0x00]), Buffer.from('localhost:3000')]);
+ * const [windowSize, addressInfo] = parseSynPayload(payload);
+ * // Returns: [4096, { type: 'tcp', host: 'localhost', port: 3000 }]
+ *
  * // Parse different address formats
- * const tcpAddr = parseSynPayload(Buffer.from('localhost:3000'));
- * // Returns: { type: 'tcp', host: 'localhost', port: 3000 }
- * 
- * const ipv6Addr = parseSynPayload(Buffer.from('[::1]:8080'));
- * // Returns: { type: 'tcp', host: '::1', port: 8080 }
- * 
- * const unixAddr = parseSynPayload(Buffer.from('unix:///tmp/my.sock'));
- * // Returns: { type: 'unix', host: '/tmp/my.sock' }
- * 
- * const listenAll = parseSynPayload(Buffer.from(':9000'));
- * // Returns: { type: 'tcp', host: '0.0.0.0', port: 9000 }
+ * const payload2 = Buffer.concat([Buffer.from([0x00, 0x20, 0x00]), Buffer.from('[::1]:8080')]);
+ * const [windowSize2, addressInfo2] = parseSynPayload(payload2);
+ * // Returns: [8192, { type: 'tcp', host: '::1', port: 8080 }]
  * ```
  */
-export function parseSynPayload(payload: Buffer): AddressInfo {
+export function parseSynPayload(
+  payload: Buffer,
+  hasWindowSize: boolean
+): [number, AddressInfo] {
+  // Extract 3-byte window size (big-endian)
+  const windowSize = hasWindowSize
+    ? (payload[0] << 16) | (payload[1] << 8) | payload[2]
+    : 0;
+
+  if (hasWindowSize) {
+    payload = payload.subarray(3);
+  }
+
+  // Extract address string from remaining payload
   const addressStr = payload.toString("utf8");
 
-  // Unix socket format: unix://my.sock
-  if (addressStr.startsWith("unix://")) {
-    return {
-      type: "unix",
-      host: addressStr.substring(7),
-    };
+  // Unix socket format: unix:my.sock
+  if (addressStr.startsWith("unix:")) {
+    return [
+      windowSize,
+      {
+        type: "unix",
+        host: addressStr.substring(5),
+      },
+    ];
   }
 
   // IPv6 format: [::1]:1111
   const ipv6Match = addressStr.match(/^\[([^\]]+)\]:(\d+)$/);
   if (ipv6Match) {
-    return {
-      type: "tcp",
-      host: ipv6Match[1],
-      port: parseInt(ipv6Match[2], 10),
-    };
+    return [
+      windowSize,
+      {
+        type: "tcp",
+        host: ipv6Match[1],
+        port: parseInt(ipv6Match[2], 10),
+      },
+    ];
   }
 
   // IPv4 format: 0.0.0.0:1111 or hostname:1111
   const ipv4Match = addressStr.match(/^([^:]+):(\d+)$/);
   if (ipv4Match) {
-    return {
-      type: "tcp",
-      host: ipv4Match[1],
-      port: parseInt(ipv4Match[2], 10),
-    };
+    return [
+      windowSize,
+      {
+        type: "tcp",
+        host: ipv4Match[1],
+        port: parseInt(ipv4Match[2], 10),
+      },
+    ];
   }
 
   // Port only format: :1111 (listen on all interfaces)
   const portOnlyMatch = addressStr.match(/^:(\d+)$/);
   if (portOnlyMatch) {
-    return {
-      type: "tcp",
-      host: "0.0.0.0",
-      port: parseInt(portOnlyMatch[1], 10),
-    };
+    return [
+      windowSize,
+      {
+        type: "tcp",
+        host: "0.0.0.0",
+        port: parseInt(portOnlyMatch[1], 10),
+      },
+    ];
   }
 
   throw new Error(`Invalid SYN payload format: ${addressStr}`);
@@ -317,18 +345,22 @@ export function parseSynPayload(payload: Buffer): AddressInfo {
  * // Format TCP addresses
  * const tcpAddr = formatSynPayload('tcp', 'localhost', 3000);
  * // Returns: 'localhost:3000'
- * 
+ *
  * const ipv6Addr = formatSynPayload('tcp', '::1', 8080);
  * // Returns: '[::1]:8080'
- * 
+ *
  * // Format Unix socket
  * const unixAddr = formatSynPayload('unix', '/tmp/my.sock');
- * // Returns: 'unix:///tmp/my.sock'
+ * // Returns: 'unix:/tmp/my.sock'
  * ```
  */
-export function formatSynPayload(type: 'tcp' | 'unix', hostOrPath: string, port?: number): string {
+export function formatSynPayload(
+  type: "tcp" | "unix",
+  hostOrPath: string,
+  port?: number
+): string {
   if (type === "unix") {
-    return `unix://${hostOrPath}`;
+    return `unix:${hostOrPath}`;
   } else if (type === "tcp") {
     if (port === undefined) {
       throw new Error("Port is required for TCP connections");

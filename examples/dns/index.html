@@ -241,6 +241,7 @@ type BrowserSocket struct {
     jsSocket js.Value
     readBuf  chan []byte
     closed   bool
+    writer   js.Value
 }
 
 // NewBrowserSocket wraps a JavaScript socket
@@ -248,20 +249,76 @@ func NewBrowserSocket(jsSocket js.Value) *BrowserSocket {
     bs := &BrowserSocket{
         jsSocket: jsSocket,
         readBuf:  make(chan []byte, 10),
+        writer:   jsSocket.Get("writable").Call("getWriter"),
     }
     
-    // Set up data handler
-    jsSocket.Call("on", "data", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-        if len(args) > 0 {
-            data := args[0]
-            buf := make([]byte, data.Get("length").Int())
-            js.CopyBytesToGo(buf, data)
-            bs.readBuf <- buf
+    // Set up readable stream handler
+    reader := jsSocket.Get("readable").Call("getReader")
+    go func() {
+        defer close(bs.readBuf)
+        for !bs.closed {
+            promise := reader.Call("read")
+            
+            // Handle promise with callback
+            promise.Call("then", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+                if len(args) > 0 {
+                    result := args[0]
+                    if result.Get("done").Bool() {
+                        return nil
+                    }
+                    value := result.Get("value")
+                    if value.Type() != js.TypeUndefined {
+                        buf := make([]byte, value.Get("length").Int())
+                        js.CopyBytesToGo(buf, value)
+                        select {
+                        case bs.readBuf <- buf:
+                        case <-time.After(time.Second):
+                            // Prevent blocking
+                        }
+                    }
+                }
+                return nil
+            }))
+            
+            time.Sleep(10 * time.Millisecond) // Prevent busy loop
         }
-        return nil
-    }))
+    }()
     
     return bs
+}
+
+// Write implements net.Conn interface
+func (bs *BrowserSocket) Write(data []byte) (int, error) {
+    if bs.closed {
+        return 0, errors.New("socket closed")
+    }
+    
+    // Convert to Uint8Array and write to stream
+    jsArray := js.Global().Get("Uint8Array").New(len(data))
+    js.CopyBytesToJS(jsArray, data)
+    
+    promise := bs.writer.Call("write", jsArray)
+    // For simplicity, don't wait for promise completion
+    
+    return len(data), nil
+}
+
+// Read implements net.Conn interface  
+func (bs *BrowserSocket) Read(buf []byte) (int, error) {
+    if bs.closed {
+        return 0, errors.New("socket closed")
+    }
+    
+    select {
+    case data, ok := <-bs.readBuf:
+        if !ok {
+            return 0, io.EOF
+        }
+        n := copy(buf, data)
+        return n, nil
+    case <-time.After(5 * time.Second):
+        return 0, errors.New("read timeout")
+    }
 }
 
 // lookupDNS performs DNS lookup using net.Conn
@@ -304,7 +361,7 @@ async function performDNSLookup(domain) {
             reject(new Error('DNS timeout'));
         }, 5000);
         
-        socket.on('connect', () => {
+        socket.connect('1.1.1.1:53', () => {
             // Call Go WASM lookupDNS with callback
             window.lookupDNS(domain, socket, (error, result) => {
                 clearTimeout(timeout);
@@ -321,14 +378,6 @@ async function performDNSLookup(domain) {
                 }
             });
         });
-        
-        socket.on('error', (err) => {
-            clearTimeout(timeout);
-            reject(err);
-        });
-        
-        // Connect to Cloudflare DNS over TCP
-        socket.connect(53, '1.1.1.1');
     });
 }</div>
         </div>
@@ -357,7 +406,7 @@ async function performDNSLookup(domain) {
     </div>
     
     <script src="wasm_exec.js"></script>
-    <script src="https://unpkg.com/@gvibehacker/browser-socket-client@0.0.2/dist/index.min.js"></script>
+    <script src="https://unpkg.com/@gvibehacker/browser-socket-client@0.1.0/dist/index.min.js"></script>
     <script>
         let wsPromise = null;
         let net = null;
@@ -478,7 +527,8 @@ async function performDNSLookup(domain) {
                     }
                 }, 5000);
                 
-                socket.on('connect', () => {
+                // Connect to Cloudflare DNS
+                socket.connect('1.1.1.1:53', () => {
                     logMessage('Connected to 1.1.1.1:53', 'success');
                     
                     // Use the new lookupDNS function with callback
@@ -504,21 +554,6 @@ async function performDNSLookup(domain) {
                         }
                     });
                 });
-                
-                socket.on('error', (error) => {
-                    clearTimeout(timeoutId);
-                    logMessage('Socket error: ' + error, 'error');
-                    showResult({ error: error.toString() });
-                });
-                
-                socket.on('end', () => {
-                    if (!responseReceived) {
-                        logMessage('Connection closed without response', 'warning');
-                    }
-                });
-                
-                // Connect to Cloudflare DNS
-                socket.connect(53, '1.1.1.1');
                 
             } catch (error) {
                 logMessage('Lookup failed: ' + error.message, 'error');

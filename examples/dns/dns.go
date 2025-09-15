@@ -49,26 +49,73 @@ func NewBrowserSocket(jsSocket js.Value) *BrowserSocket {
 		closed:   false,
 	}
 
-	// Set up data handler
-	dataHandler := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) > 0 {
-			data := args[0]
-			length := data.Get("length").Int()
-			buf := make([]byte, length)
-			js.CopyBytesToGo(buf, data)
-
-			select {
-			case bs.readBuf <- buf:
-			default:
-				// Buffer full, drop data
-			}
-		}
-		return nil
-	})
-
-	jsSocket.Call("on", "data", dataHandler)
+	// Start reading from readable stream in background goroutine
+	go bs.readFromStream()
 
 	return bs
+}
+
+// readFromStream reads from the socket's readable stream
+func (bs *BrowserSocket) readFromStream() {
+	defer close(bs.readBuf)
+	
+	// Get the readable stream reader
+	readableStream := bs.jsSocket.Get("readable")
+	if readableStream.IsUndefined() {
+		return
+	}
+	
+	reader := readableStream.Call("getReader")
+	
+	for !bs.closed {
+		// Read from stream
+		readPromise := reader.Call("read")
+		
+		// Handle the promise
+		done := make(chan bool, 1)
+		var resultValue js.Value
+		
+		readPromise.Call("then", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			if len(args) > 0 {
+				resultValue = args[0]
+			}
+			done <- true
+			return nil
+		})).Call("catch", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			done <- true
+			return nil
+		}))
+		
+		// Wait for promise to resolve with timeout
+		select {
+		case <-done:
+			if !resultValue.IsUndefined() && !bs.closed {
+				if resultValue.Get("done").Bool() {
+					return // Stream ended
+				}
+				
+				value := resultValue.Get("value")
+				if !value.IsUndefined() {
+					length := value.Get("length").Int()
+					if length > 0 {
+						buf := make([]byte, length)
+						js.CopyBytesToGo(buf, value)
+						
+						select {
+						case bs.readBuf <- buf:
+						case <-time.After(time.Second):
+							// Prevent blocking
+						}
+					}
+				}
+			}
+		case <-time.After(5 * time.Second):
+			// Timeout, continue loop
+		}
+		
+		// Small delay to prevent busy loop
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // Read implements net.Conn
@@ -96,11 +143,31 @@ func (bs *BrowserSocket) Write(b []byte) (n int, err error) {
 		return 0, io.EOF
 	}
 
+	// Get the writable stream writer
+	writableStream := bs.jsSocket.Get("writable")
+	if writableStream.IsUndefined() {
+		return 0, fmt.Errorf("writable stream not available")
+	}
+	
+	writer := writableStream.Call("getWriter")
+	
 	// Convert to Uint8Array for JavaScript
 	jsArray := js.Global().Get("Uint8Array").New(len(b))
 	js.CopyBytesToJS(jsArray, b)
 
-	bs.jsSocket.Call("write", jsArray)
+	// Write to stream
+	writePromise := writer.Call("write", jsArray)
+	
+	// For simplicity, don't wait for promise resolution
+	// In production, you might want to handle the promise
+	writePromise.Call("catch", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+		// Handle write errors if needed
+		return nil
+	}))
+	
+	// Release the writer
+	writer.Call("releaseLock")
+	
 	return len(b), nil
 }
 
@@ -108,8 +175,18 @@ func (bs *BrowserSocket) Write(b []byte) (n int, err error) {
 func (bs *BrowserSocket) Close() error {
 	if !bs.closed {
 		bs.closed = true
-		bs.jsSocket.Call("end")
-		close(bs.readBuf)
+		
+		// Close the writable stream
+		writableStream := bs.jsSocket.Get("writable")
+		if !writableStream.IsUndefined() {
+			writer := writableStream.Call("getWriter")
+			closePromise := writer.Call("close")
+			closePromise.Call("catch", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+				return nil
+			}))
+		}
+		
+		// Note: readBuf channel will be closed by readFromStream goroutine
 	}
 	return nil
 }

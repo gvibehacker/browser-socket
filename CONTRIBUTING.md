@@ -27,6 +27,9 @@ cd server && npm install
 
 # Client
 cd ../client && npm install
+
+# Cloudflare Worker
+cd ../cf-worker && npm install
 ```
 
 3. **Build and test:**
@@ -37,13 +40,19 @@ cd server && npm run build
 
 # Client
 cd ../client && npm run build
+
+# Cloudflare Worker
+cd ../cf-worker && npm run build
 ```
 
 4. **Run examples:**
 
 ```bash
-# Start demo server
-cd demo-server && npm install && npm start
+# Start demo server (Node.js bridge)
+cd examples/bridge && npm install && npm start
+
+# OR deploy Cloudflare Worker (requires wrangler CLI)
+cd examples/cloudflare-worker && npx wrangler deploy
 
 # Open examples in browser
 open examples/web-server/index.html
@@ -57,7 +66,9 @@ open examples/dns/index.html
 1. Check existing issues to avoid duplicates
 2. Use the bug report template
 3. Include:
-   - Browser and Node.js versions
+   - Browser versions (Chrome, Firefox, Safari, Edge)
+   - Node.js version (for server bridge)
+   - Cloudflare Worker runtime (if using CF Worker bridge)
    - Minimal reproduction case
    - Expected vs actual behavior
    - Console errors/logs
@@ -76,10 +87,11 @@ open examples/dns/index.html
 - **Protocol improvements** - Enhance the binary wire protocol
 - **Performance optimizations** - Reduce latency and improve throughput
 - **Browser compatibility** - Test and fix issues across browsers
-- **Error handling** - Better error messages and recovery
-- **Documentation** - API docs, tutorials, examples
-- **Examples** - Creative demos showing new possibilities
-- **Security** - Audit and improve security measures
+- **Cloudflare Worker features** - Leverage new CF Workers APIs and capabilities
+- **Error handling** - Better error messages and recovery across all implementations
+- **Documentation** - API docs, tutorials, examples for all bridge types
+- **Examples** - Creative demos showing new possibilities with both bridges
+- **Security** - Audit and improve security measures for all deployments
 
 #### Development Guidelines
 
@@ -91,9 +103,9 @@ open examples/dns/index.html
 
 2. **Keep dependencies minimal:**
 
-   - No third-party libraries except built-in Node.js modules
-   - Client-side code should be vanilla JavaScript/TypeScript
-   - Server uses only the `ws` WebSocket library
+   - **Node.js server**: No third-party libraries except built-in modules and `ws` WebSocket library
+   - **Client-side code**: Vanilla JavaScript/TypeScript with Web APIs only
+   - **Cloudflare Worker**: Use only Cloudflare Workers APIs and Web Standards
 
 3. **Write modular, readable code:**
 
@@ -102,9 +114,10 @@ open examples/dns/index.html
    - Add comments for complex protocol logic
 
 4. **Test your changes:**
-   - Verify examples still work
-   - Test with multiple browser types
-   - Check both client and server functionality
+   - Verify examples still work with both Node.js and Cloudflare Worker bridges
+   - Test with multiple browser types (Chrome, Firefox, Safari, Edge)
+   - Check client functionality with both bridge implementations
+   - Test Cloudflare Worker deployment if applicable
 
 #### Pull Request Process
 
@@ -122,9 +135,10 @@ git checkout -b feature/your-feature-name
 
 3. **Test thoroughly:**
 
-   - Build both client and server
-   - Run existing examples
-   - Test your new functionality
+   - Build client, server, and Cloudflare Worker packages
+   - Run existing examples with both bridge types
+   - Test your new functionality across implementations
+   - Verify Cloudflare Worker deployment works if modified
 
 4. **Submit the PR:**
 
@@ -142,16 +156,18 @@ git checkout -b feature/your-feature-name
 
 ### Key Components
 
-- **Server (`/server/src/`)**: WebSocket transport and TCP connection handling
+- **Server (`/server/src/`)**: Node.js WebSocket transport and TCP connection handling
 - **Client (`/client/src/`)**: Browser-compatible TCP socket API
-- **Examples (`/examples/`)**: Demo applications
+- **Cloudflare Worker (`/cf-worker/src/`)**: Cloudflare Workers WebSocket bridge with connect API
+- **Examples (`/examples/`)**: Demo applications for both bridge types
 
 ### Wire Protocol
 
 - 8-byte header: Length(24) + Flag(8) + StreamID(32)
-- Flags: DATA(0), SYN(1), ACK(2), FIN(4), RST(8), LISTEN(16)
+- Flags: DATA(0), SYN(1), ACK(2), FIN(4), RST(8), LISTEN(16), WINDOW_UPDATE(32)
 - Stream multiplexing with unique IDs
 - Binary payload for efficiency
+- Window size control with 3-byte values in SYN, ACK, and WINDOW_UPDATE frames
 
 #### Protocol Design Principles
 
@@ -161,18 +177,20 @@ git checkout -b feature/your-feature-name
 
 ### Testing Strategy
 
-- Manual testing with examples
-- Cross-browser compatibility checks
-- Performance testing with multiple connections
-- Protocol compliance verification
+- Manual testing with examples using both Node.js and Cloudflare Worker bridges
+- Cross-browser compatibility checks (Chrome, Firefox, Safari, Edge)
+- Performance testing with multiple connections across bridge types
+- Protocol compliance verification for all implementations
+- Cloudflare Worker edge testing and deployment verification
 
 ## 🔒 Security Considerations
 
 - Never expose sensitive data in logs
-- Validate all input data
-- Implement proper access controls
-- Consider rate limiting and DoS protection
+- Validate all input data across all bridge implementations
+- Implement proper access controls for both Node.js and Cloudflare Worker deployments
+- Consider rate limiting and DoS protection (leverage Cloudflare's built-in protection for Worker bridge)
 - Use secure WebSocket connections (WSS) in production
+- Follow Cloudflare Workers security best practices when contributing to CF Worker bridge
 
 ## 📚 Documentation
 
@@ -185,10 +203,11 @@ git checkout -b feature/your-feature-name
 
 ### Examples
 
-- Create clear, focused examples
-- Include step-by-step setup instructions
-- Show both basic and advanced usage
-- Test examples across browsers
+- Create clear, focused examples for both Node.js and Cloudflare Worker bridges
+- Include step-by-step setup instructions for both deployment types
+- Show both basic and advanced usage patterns
+- Test examples across browsers with both bridge implementations
+- Include Cloudflare Worker deployment instructions (wrangler.toml, etc.)
 
 ## 🤝 Community Guidelines
 
