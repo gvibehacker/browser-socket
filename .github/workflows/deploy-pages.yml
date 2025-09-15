@@ -74,7 +74,7 @@ jobs:
             cp -r server/docs _site/docs/server
           fi
           if [ -d "cf-worker/docs" ]; then
-            cp -r server/docs _site/docs/cloudflare-worker
+            cp -r cf-worker/docs _site/docs/cloudflare-worker
           fi
 
       - name: Upload artifact
