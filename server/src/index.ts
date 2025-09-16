@@ -757,7 +757,7 @@ export class Connection extends EventEmitter<ConnectionEvents> {
     this.closed = true;
     for (const socket of this.sockets.values()) {
       if (socket.ended && socket.remoteEnded) continue;
-      socket.onError("Websocket closed");
+      socket.onError?.("Websocket closed");
     }
     this.sockets.clear();
   }
@@ -1229,14 +1229,6 @@ export class ListenSocket extends EventEmitter<ListenSocketEvents> {
   close(): void {
     if (!this.connection.sockets.delete(this.streamId)) return;
     sendFrame(this.connection.ws, FLAGS.RST, this.streamId, Buffer.alloc(0));
-  }
-
-  /**
-   * Internal method to handle socket errors.
-   * @internal
-   */
-  onError(): void {
-    if (!this.connection.sockets.delete(this.streamId)) return;
   }
 
   /**
