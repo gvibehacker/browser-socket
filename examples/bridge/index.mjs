@@ -31,15 +31,18 @@ transport.on("connection", (conn) => {
       });
 
       const writer = socket.writable.getWriter();
-      tcpSocket.on("data", async (chunk) => {
+      tcpSocket.on("readable", async () => {
+        let chunk;
         try {
-          while (chunk) {
+          while ((chunk = tcpSocket.read()) !== null) {
             await writer.write(chunk);
           }
         } catch (err) {
           writer.abort(String(err.message || err));
         }
       });
+      tcpSocket.on("end", () => writer.close());
+      tcpSocket.on("error", (e) => writer.abort(String(e?.message || e)));
 
       tcpSocket.on("end", () => writer.close());
 
@@ -80,8 +83,7 @@ transport.on("connection", (conn) => {
       socket.connect(
         tcpSocket.remoteAddress,
         tcpSocket.remotePort,
-        async (newSocket) => {
-          const reader = newSocket.readable.getReader();
+        (newSocket) => {
           const writer = newSocket.writable.getWriter();
           tcpSocket.on("readable", async () => {
             let chunk;
@@ -93,23 +95,26 @@ transport.on("connection", (conn) => {
               writer.abort(String(err.message || err));
             }
           });
-
           tcpSocket.on("end", () => writer.close());
+          tcpSocket.on("error", (e) => writer.abort(String(e?.message || e)));
 
-          try {
-            while (true) {
-              const { value, done } = await reader.read();
-              if (done) {
-                tcpSocket.end();
-                break;
-              }
-              tcpSocket.write(value);
-            }
-          } catch (e) {
-            console.error(`WebSocket stream error: ${e.message}`);
-            tcpSocket.destroy();
-          }
-          newSocket.destroy();
+          newSocket.readable
+            .pipeTo(
+              new WritableStream({
+                write(chunk) {
+                  tcpSocket.write(chunk);
+                },
+                close() {
+                  tcpSocket.end();
+                },
+                abort() {
+                  tcpSocket.destroy();
+                },
+              })
+            )
+            .catch((e) => {
+              newSocket.destroy(String(e?.message || e));
+            });
         }
       );
 
