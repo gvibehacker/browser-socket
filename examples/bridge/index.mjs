@@ -42,9 +42,6 @@ transport.on("connection", (conn) => {
         }
       });
       tcpSocket.on("end", () => writer.close());
-      tcpSocket.on("error", (e) => writer.abort(String(e?.message || e)));
-
-      tcpSocket.on("end", () => writer.close());
 
       // Handle data from WebSocket to TCP using readable stream
       socket.readable
@@ -96,7 +93,6 @@ transport.on("connection", (conn) => {
             }
           });
           tcpSocket.on("end", () => writer.close());
-          tcpSocket.on("error", (e) => writer.abort(String(e?.message || e)));
 
           newSocket.readable
             .pipeTo(
