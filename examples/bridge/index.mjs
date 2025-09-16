@@ -121,7 +121,7 @@ transport.on("connection", (conn) => {
 
     server.on("error", (error) => {
       console.error(`Server listen error:`, error.message);
-      socket.destroy(Buffer.from(error.message));
+      socket.close();
     });
 
     server.listen(addressInfo.port, addressInfo.host, () => {

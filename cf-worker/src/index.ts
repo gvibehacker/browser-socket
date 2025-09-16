@@ -35,7 +35,7 @@
  *       // Handle browser TCP connection requests
  *       connection.addEventListener('connect', async (event) => {
  *         const [socket, addressInfo] = event.detail;
- *         
+ *
  *         try {
  *           // Use Cloudflare's connect API for TCP connections
  *           const tcpSocket = connect({
@@ -82,13 +82,13 @@
  * ```javascript
  * // Browser-side code using the worker
  * const net = new Net('wss://your-worker.workers.dev');
- * 
+ *
  * const redis = new net.Socket();
  * redis.connect(6379, 'redis.example.com', () => {
  *   console.log('Connected to Redis through Cloudflare Worker');
  *   redis.write('PING\r\n');
  * });
- * 
+ *
  * redis.on('data', (data) => {
  *   console.log('Redis response:', data.toString());
  * });
@@ -168,7 +168,7 @@ class WritableStreamSink implements UnderlyingSink<Uint8Array> {
   private controller: WritableStreamDefaultController | null = null;
   private waitingForCapacity: ((value: void) => void) | null = null;
 
-  constructor(private socket: Socket, private availableWindowSize: number) {}
+  constructor(private socket: Socket) {}
 
   start(controller: WritableStreamDefaultController): void {
     this.controller = controller;
@@ -180,7 +180,7 @@ class WritableStreamSink implements UnderlyingSink<Uint8Array> {
     }
 
     // Wait for available window space if needed
-    while (this.availableWindowSize < chunk.length) {
+    while (this.socket.availableWriteWindowSize < chunk.length) {
       if (this.socket.ended) {
         throw new Error("Socket is closed");
       }
@@ -191,8 +191,6 @@ class WritableStreamSink implements UnderlyingSink<Uint8Array> {
       });
     }
 
-    // Send the data through the socket's write method
-    this.availableWindowSize -= chunk.length;
     this.socket.write(chunk);
   }
 
@@ -208,8 +206,7 @@ class WritableStreamSink implements UnderlyingSink<Uint8Array> {
     this.waitingForCapacity = null;
   }
 
-  addCapacity(windowSize: number): void {
-    this.availableWindowSize += windowSize;
+  signalCapacity(): void {
     this.waitingForCapacity?.();
     this.waitingForCapacity = null;
   }
@@ -252,7 +249,7 @@ class WritableStreamSink implements UnderlyingSink<Uint8Array> {
  * connection.addEventListener('connect', async (event) => {
  *   const [socket, addressInfo] = event.detail;
  *   console.log(`Browser wants to connect to ${addressInfo.host}:${addressInfo.port}`);
- *   
+ *
  *   // Use Cloudflare's connect API for TCP connections
  *   const tcpSocket = connect({
  *     hostname: addressInfo.host,
@@ -282,7 +279,7 @@ class WritableStreamSink implements UnderlyingSink<Uint8Array> {
  *
  * connection.addEventListener('connect', async (event) => {
  *   const [socket, addressInfo] = event.detail;
- *   
+ *
  *   try {
  *     // Validate connection request
  *     if (!addressInfo.host || !addressInfo.port) {
@@ -338,24 +335,24 @@ export class Connection extends EventTarget {
 
   /**
    * Creates a new Connection instance for a WebSocket
-   * 
+   *
    * Initializes the connection handler for managing multiplexed TCP streams
    * over a single WebSocket connection from a browser. Sets up message and
    * close event handlers for the WebSocket.
-   * 
+   *
    * @param ws - WebSocket connection to the browser
-   * 
+   *
    * @example
    * ```javascript
    * // Create connection in Cloudflare Worker
    * const pair = new WebSocketPair();
    * const [client, server] = Object.values(pair);
    * const connection = new Connection(server);
-   * 
+   *
    * // Return client WebSocket to browser
-   * return new Response(null, { 
-   *   status: 101, 
-   *   webSocket: client 
+   * return new Response(null, {
+   *   status: 101,
+   *   webSocket: client
    * });
    * ```
    */
@@ -474,35 +471,35 @@ export class Connection extends EventTarget {
 
   /**
    * Closes the WebSocket connection and all associated sockets
-   * 
+   *
    * Gracefully shuts down the connection by destroying all active sockets,
    * clearing the socket map, and closing the underlying WebSocket. This
    * ensures proper cleanup when the Worker is terminating or the browser
    * connection needs to be closed.
-   * 
+   *
    * @example
    * ```javascript
    * // Close connection when Worker is done
    * connection.close();
    * ```
-   * 
+   *
    * @example
    * ```javascript
    * // Close connection with cleanup in Worker
    * export default {
    *   async fetch(request, env, ctx) {
    *     const connection = new Connection(webSocket);
-   *     
+   *
    *     // Handle connection cleanup on context cancellation
    *     ctx.waitUntil(new Promise((resolve) => {
    *       connection.addEventListener('close', resolve);
    *     }));
-   * 
+   *
    *     // Ensure cleanup on termination
    *     addEventListener('beforeunload', () => {
    *       connection.close();
    *     });
-   * 
+   *
    *     return response;
    *   }
    * };
@@ -577,7 +574,7 @@ export class Connection extends EventTarget {
  * ```javascript
  * connection.addEventListener('connect', async (event) => {
  *   const [socket, addressInfo] = event.detail;
- *   
+ *
  *   if (addressInfo.port === 80 || addressInfo.port === 443) {
  *     // Proxy HTTP/HTTPS connections
  *     const tcpSocket = connect({
@@ -611,7 +608,7 @@ export class Connection extends EventTarget {
  * ```javascript
  * connection.addEventListener('connect', async (event) => {
  *   const [socket, addressInfo] = event.detail;
- *   
+ *
  *   socket.ack({
  *     address: addressInfo.host,
  *     port: addressInfo.port,
@@ -625,7 +622,7 @@ export class Connection extends EventTarget {
  *   while (true) {
  *     const { done, value } = await reader.read();
  *     if (done) break;
- *     
+ *
  *     // Process data from browser
  *     console.log('Received from browser:', new TextDecoder().decode(value));
  *   }
@@ -641,24 +638,25 @@ export class Socket {
   readable: ReadableStream;
   readableSource: ReadableStreamSource;
   writable: WritableStream;
-  private writableSink: WritableStreamSink;
   ended: boolean = false;
   remoteEnded: boolean = false;
+  availableWriteWindowSize: number;
   remoteAddress: string | null = null;
   remotePort: number | null = null;
+  private writableSink: WritableStreamSink;
 
   /**
    * Creates a new Socket instance
-   * 
+   *
    * Initializes a new multiplexed socket with ReadableStream and WritableStream
    * interfaces for handling TCP data over WebSocket transport. Sets up flow
    * control with the specified window sizes.
-   * 
+   *
    * @param connection - Parent Connection instance managing the WebSocket
    * @param streamId - Unique stream identifier for this socket (even numbers for server-side)
    * @param initialWindowSize - Initial window size for flow control on readable stream
    * @param availableWriteWindowSize - Available window size for writing to browser
-   * 
+   *
    * @example
    * ```javascript
    * // Socket is typically created internally by Connection
@@ -681,7 +679,8 @@ export class Socket {
       highWaterMark: initialWindowSize,
       size: (chunk) => chunk.length,
     });
-    this.writableSink = new WritableStreamSink(this, availableWriteWindowSize);
+    this.availableWriteWindowSize = availableWriteWindowSize;
+    this.writableSink = new WritableStreamSink(this);
     this.writable = new WritableStream(this.writableSink, {
       highWaterMark: 0,
     });
@@ -689,18 +688,18 @@ export class Socket {
 
   /**
    * Sends an acknowledgment frame to the browser
-   * 
+   *
    * Acknowledges a connection request from the browser, indicating that
    * the TCP connection has been established successfully. The address
    * information is sent back to the browser to confirm connection details.
-   * 
+   *
    * @param addressInfo - Optional address information for the established connection
    * @param addressInfo.address - Target host address
    * @param addressInfo.port - Target host port
    * @param addressInfo.family - IP family ('IPv4' or 'IPv6')
    * @param addressInfo.remoteAddress - Worker's remote address (usually '0.0.0.0')
    * @param addressInfo.remotePort - Worker's remote port (usually 0)
-   * 
+   *
    * @example Basic ACK
    * ```javascript
    * // Acknowledge connection with address details
@@ -712,24 +711,24 @@ export class Socket {
    *   remotePort: 0
    * });
    * ```
-   * 
+   *
    * @example ACK Without Address Info
    * ```javascript
    * // Send simple acknowledgment
    * socket.ack();
    * ```
-   * 
+   *
    * @example Connection Flow
    * ```javascript
    * connection.addEventListener('connect', async (event) => {
    *   const [socket, addressInfo] = event.detail;
-   *   
+   *
    *   try {
    *     const tcpSocket = connect({
    *       hostname: addressInfo.host,
    *       port: addressInfo.port
    *     });
-   * 
+   *
    *     // Send ACK to confirm successful connection
    *     socket.ack({
    *       address: addressInfo.host,
@@ -738,7 +737,7 @@ export class Socket {
    *       remoteAddress: '0.0.0.0',
    *       remotePort: 0
    *     });
-   * 
+   *
    *     // Proceed with data piping...
    *   } catch (error) {
    *     socket.destroy(`Failed to connect: ${error.message}`);
@@ -769,36 +768,36 @@ export class Socket {
 
   /**
    * Writes data to the socket (sends to browser)
-   * 
+   *
    * Sends data directly to the browser through the WebSocket using DATA frames.
    * This method provides immediate data transmission without flow control,
    * making it suitable for simple data sending scenarios.
-   * 
+   *
    * Note: For proper flow control and backpressure handling, prefer using
    * the WritableStream interface (socket.writable.getWriter().write()).
-   * 
+   *
    * @param data - Data to send (Uint8Array or string)
    * @returns True if data was sent, false if socket is destroyed
-   * 
+   *
    * @example Send String Data
    * ```javascript
    * // Send text data to browser
    * socket.write('Hello from Cloudflare Worker');
    * socket.write('Server response data');
    * ```
-   * 
+   *
    * @example Send Binary Data
    * ```javascript
    * // Send binary data to browser
    * const binaryData = new Uint8Array([0x48, 0x65, 0x6c, 0x6c, 0x6f]);
    * socket.write(binaryData);
    * ```
-   * 
+   *
    * @example HTTP Response Proxy
    * ```javascript
    * connection.addEventListener('connect', async (event) => {
    *   const [socket, addressInfo] = event.detail;
-   *   
+   *
    *   socket.ack({
    *     address: addressInfo.host,
    *     port: addressInfo.port,
@@ -806,7 +805,7 @@ export class Socket {
    *     remoteAddress: '0.0.0.0',
    *     remotePort: 0
    *   });
-   * 
+   *
    *   // Send HTTP response directly
    *   socket.write('HTTP/1.1 200 OK\r\n');
    *   socket.write('Content-Type: text/plain\r\n');
@@ -818,33 +817,32 @@ export class Socket {
    */
   write(data: Uint8Array | string): boolean {
     if (this.ended) return false;
-    this.connection.sendFrame(
-      FLAGS.DATA,
-      this.streamId,
-      typeof data === "string" ? new TextEncoder().encode(data) : data
-    );
+    const payload =
+      typeof data === "string" ? new TextEncoder().encode(data) : data;
+    this.availableWriteWindowSize -= payload.length;
+    this.connection.sendFrame(FLAGS.DATA, this.streamId, payload);
     return true;
   }
 
   /**
    * Ends the socket connection gracefully
-   * 
+   *
    * Sends a FIN frame to the browser to indicate that no more data
    * will be sent from the worker. The connection remains open for
    * receiving data from the browser until the browser also sends FIN.
-   * 
+   *
    * @example Basic Connection End
    * ```javascript
    * // End the connection after sending data
    * socket.write('Final message');
    * socket.end();
    * ```
-   * 
+   *
    * @example HTTP Response End
    * ```javascript
    * connection.addEventListener('connect', async (event) => {
    *   const [socket, addressInfo] = event.detail;
-   *   
+   *
    *   socket.ack({
    *     address: addressInfo.host,
    *     port: addressInfo.port,
@@ -852,7 +850,7 @@ export class Socket {
    *     remoteAddress: '0.0.0.0',
    *     remotePort: 0
    *   });
-   * 
+   *
    *   // Send complete HTTP response and end
    *   socket.write('HTTP/1.1 200 OK\r\n');
    *   socket.write('Content-Type: application/json\r\n\r\n');
@@ -872,47 +870,47 @@ export class Socket {
 
   /**
    * Forcefully destroys the socket connection
-   * 
+   *
    * Immediately terminates the socket connection by sending an RST frame
    * to the browser. This is used for error conditions or when the connection
    * needs to be aborted immediately. Unlike end(), this does not wait for
    * graceful shutdown and closes the connection immediately.
-   * 
+   *
    * @param error - Optional error information (Error object, Uint8Array, or string)
-   * 
+   *
    * @example Destroy With Error
    * ```javascript
    * // Destroy connection due to timeout
    * socket.destroy(new Error('Connection timeout'));
-   * 
+   *
    * // Destroy with custom error message
    * socket.destroy('Invalid request format');
    * ```
-   * 
+   *
    * @example Destroy Without Error
    * ```javascript
    * // Destroy connection cleanly
    * socket.destroy();
    * ```
-   * 
+   *
    * @example Connection Validation
    * ```javascript
    * connection.addEventListener('connect', async (event) => {
    *   const [socket, addressInfo] = event.detail;
-   *   
+   *
    *   // Validate connection request
    *   const allowedHosts = ['api.example.com', 'db.example.com'];
    *   if (!allowedHosts.includes(addressInfo.host)) {
    *     socket.destroy('Host not allowed');
    *     return;
    *   }
-   * 
+   *
    *   const allowedPorts = [80, 443, 3306, 5432];
    *   if (!allowedPorts.includes(addressInfo.port)) {
    *     socket.destroy(`Port ${addressInfo.port} not allowed`);
    *     return;
    *   }
-   * 
+   *
    *   // Proceed with connection...
    *   socket.ack({
    *     address: addressInfo.host,
@@ -923,18 +921,18 @@ export class Socket {
    *   });
    * });
    * ```
-   * 
+   *
    * @example TCP Connection Error Handling
    * ```javascript
    * connection.addEventListener('connect', async (event) => {
    *   const [socket, addressInfo] = event.detail;
-   *   
+   *
    *   try {
    *     const tcpSocket = connect({
    *       hostname: addressInfo.host,
    *       port: addressInfo.port
    *     });
-   * 
+   *
    *     socket.ack({
    *       address: addressInfo.host,
    *       port: addressInfo.port,
@@ -942,21 +940,21 @@ export class Socket {
    *       remoteAddress: '0.0.0.0',
    *       remotePort: 0
    *     });
-   * 
+   *
    *     // Handle TCP connection errors
    *     tcpSocket.closed.catch((error) => {
    *       socket.destroy(`TCP error: ${error.message}`);
    *     });
-   * 
+   *
    *     // Pipe with error handling
    *     socket.readable.pipeTo(tcpSocket.writable).catch((error) => {
    *       socket.destroy(`Write error: ${error.message}`);
    *     });
-   * 
+   *
    *     tcpSocket.readable.pipeTo(socket.writable).catch((error) => {
    *       socket.destroy(`Read error: ${error.message}`);
    *     });
-   * 
+   *
    *   } catch (error) {
    *     socket.destroy(`Connection failed: ${error.message}`);
    *   }
@@ -990,6 +988,7 @@ export class Socket {
   }
 
   incrementWriteWindow(windowSize: number) {
-    this.writableSink.addCapacity(windowSize);
+    this.availableWriteWindowSize += windowSize;
+    this.writableSink.signalCapacity();
   }
 }

@@ -7,7 +7,7 @@
     "dev": "node index.mjs"
   },
   "dependencies": {
-    "@gvibehacker/browser-socket-server": "^0.1.0"
+    "@gvibehacker/browser-socket-server": "^0.1.1"
   },
   "devDependencies": {},
   "keywords": [

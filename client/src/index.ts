@@ -248,7 +248,7 @@ class WritableStreamSink implements UnderlyingSink<Uint8Array> {
   private controller: WritableStreamDefaultController | null = null;
   private waitingForCapacity: ((value: void) => void) | null = null;
 
-  constructor(private socket: Socket, private availableWindowSize: number) {}
+  constructor(private socket: Socket) {}
 
   start(controller: WritableStreamDefaultController): void {
     this.controller = controller;
@@ -260,7 +260,7 @@ class WritableStreamSink implements UnderlyingSink<Uint8Array> {
     }
 
     // Wait for available window space if needed
-    while (this.availableWindowSize < chunk.length) {
+    while (this.socket.availableWriteWindowSize < chunk.length) {
       if (this.socket.ended) {
         throw new Error("Socket is closed");
       }
@@ -272,7 +272,6 @@ class WritableStreamSink implements UnderlyingSink<Uint8Array> {
     }
 
     // Send the data through the socket's write method
-    this.availableWindowSize -= chunk.length;
     this.socket.write(chunk);
   }
 
@@ -288,8 +287,7 @@ class WritableStreamSink implements UnderlyingSink<Uint8Array> {
     this.waitingForCapacity = null;
   }
 
-  addCapacity(windowSize: number): void {
-    this.availableWindowSize += windowSize;
+  signalCapacity(): void {
     this.waitingForCapacity?.();
     this.waitingForCapacity = null;
   }
@@ -372,6 +370,8 @@ export class Socket {
   public readableSource: ReadableStreamSource;
   /** WritableStream for sending data to the remote peer */
   public readonly writable: WritableStream<Uint8Array>;
+  /** Send window size for flow control */
+  public availableWriteWindowSize: number;
   /** Internal writable stream sink controller */
   private writableSink: WritableStreamSink;
   /** Unique stream identifier for this socket connection */
@@ -401,6 +401,7 @@ export class Socket {
     availableWriteWindowSize: number = 0
   ) {
     this.streamId = streamId || net.getNextStreamId();
+    this.availableWriteWindowSize = availableWriteWindowSize;
     this.readableSource = new ReadableStreamSource(
       this.net,
       this.streamId,
@@ -410,7 +411,7 @@ export class Socket {
       highWaterMark: initialWindowSize,
       size: (chunk) => chunk.length,
     });
-    this.writableSink = new WritableStreamSink(this, availableWriteWindowSize);
+    this.writableSink = new WritableStreamSink(this);
     this.writable = new WritableStream(this.writableSink, {
       highWaterMark: 0,
     });
@@ -542,6 +543,7 @@ export class Socket {
     // Convert string to Uint8Array if needed
     const payload =
       typeof data === "string" ? new TextEncoder().encode(data) : data;
+    this.availableWriteWindowSize -= payload.length;
     this.net.sendFrame(FLAGS.DATA, this.streamId, payload);
     return true;
   }
@@ -643,7 +645,8 @@ export class Socket {
    * @internal
    */
   incrementWriteWindow(windowSize: number): void {
-    this.writableSink.addCapacity(windowSize);
+    this.availableWriteWindowSize += windowSize;
+    this.writableSink.signalCapacity();
   }
 }
 
